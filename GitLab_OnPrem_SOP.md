@@ -1,9 +1,9 @@
 # GitLab CE On-Premises Deployment — Standard Operating Procedure
 
 **Platform:** Oracle Enterprise Linux 9 (OEL 9)
-**Deployment Method:** Docker
+**Deployment Method:** Docker Compose
 **Edition:** GitLab Community Edition (CE) — Free
-**Document Version:** 1.2
+**Document Version:** 1.3
 **Date:** 2026-02-21
 
 ---
@@ -175,16 +175,33 @@ systemctl start docker
 systemctl enable docker
 ```
 
-### 3.6 Verify Installation
+### 3.6 Fix Docker Socket Path (OEL 9)
+
+On some OEL 9 installations, the Docker CLI expects the socket at `/var/run/docker.sock` but the daemon creates it at `/run/docker.sock`. If you get `dial unix /var/run/docker.sock: connect: no such file or directory` even though Docker is running, fix it:
+
+```bash
+# Check if docker commands work
+docker info > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+  echo "Fixing Docker socket context..."
+  docker context update default --docker "host=unix:///run/docker.sock"
+fi
+
+# Verify fix
+docker info | head -5
+```
+
+### 3.7 Verify Installation
 
 ```bash
 docker --version
+docker compose version
 docker run hello-world
 ```
 
-Expected: `Hello from Docker!`
+Expected: `Hello from Docker!` and Docker Compose version output (v2.x).
 
-### 3.7 Clean Up Verification Container
+### 3.8 Clean Up Verification Container
 
 ```bash
 docker rm $(docker ps -aq --filter ancestor=hello-world)
@@ -576,28 +593,32 @@ drwxr-xr-x  root root  ..
 
 ## 6. GitLab Container Deployment
 
-### 6.1 Pull GitLab CE Image
+### 6.1 Create Docker Compose File
 
 ```bash
-docker pull gitlab/gitlab-ce:latest
+cat > /var/gitlab/docker-compose.yml << 'EOF'
+services:
+  gitlab:
+    image: gitlab/gitlab-ce:latest
+    container_name: gitlab
+    hostname: gitlab.yourdomain.com
+    restart: always
+    shm_size: '256m'
+    ports:
+      - "443:443"
+      - "80:80"
+      - "2222:22"
+    volumes:
+      - /var/gitlab/config:/etc/gitlab
+      - /var/gitlab/logs:/var/log/gitlab
+      - /var/gitlab/data:/var/opt/gitlab
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'https://gitlab.yourdomain.com'
+EOF
 ```
 
-### 6.2 Deploy the Container
-
-```bash
-docker run -d \
-  --hostname gitlab.yourdomain.com \
-  --name gitlab \
-  --restart always \
-  -p 443:443 \
-  -p 80:80 \
-  -p 2222:22 \
-  --shm-size 256m \
-  -v /var/gitlab/config:/etc/gitlab \
-  -v /var/gitlab/logs:/var/log/gitlab \
-  -v /var/gitlab/data:/var/opt/gitlab \
-  gitlab/gitlab-ce:latest
-```
+> **Replace** `gitlab.yourdomain.com` with your actual FQDN (appears twice in the file).
 
 **Port mapping explained:**
 
@@ -607,10 +628,17 @@ docker run -d \
 | 80        | 80            | HTTP (will redirect to HTTPS)              |
 | 2222      | 22            | SSH (port 22 is used by host SSH service)  |
 
+### 6.2 Deploy GitLab
+
+```bash
+cd /var/gitlab
+docker compose up -d
+```
+
 ### 6.3 Verify Container is Running
 
 ```bash
-docker ps --filter name=gitlab
+docker compose -f /var/gitlab/docker-compose.yml ps
 ```
 
 ### 6.4 Wait for Initial Configuration
@@ -618,7 +646,7 @@ docker ps --filter name=gitlab
 First boot takes **3–5 minutes**. Watch the logs:
 
 ```bash
-docker logs -f gitlab
+docker compose -f /var/gitlab/docker-compose.yml logs -f
 ```
 
 Wait until you see `gitlab Reconfigured!`, then press `Ctrl+C`.
@@ -1415,33 +1443,22 @@ tar czf /var/gitlab/backups/pre_update_config_$(date +%Y%m%d).tar.gz \
 ### 15.2 Perform the Update
 
 ```bash
+cd /var/gitlab
+
 # Pull latest image
-docker pull gitlab/gitlab-ce:latest
+docker compose pull
 
-# Stop and remove the container (DATA IS SAFE in /var/gitlab)
-docker stop gitlab
-docker rm gitlab
-
-# Deploy with the new image (same command as original deployment)
-docker run -d \
-  --hostname gitlab.yourdomain.com \
-  --name gitlab \
-  --restart always \
-  -p 443:443 \
-  -p 80:80 \
-  -p 2222:22 \
-  --shm-size 256m \
-  -v /var/gitlab/config:/etc/gitlab \
-  -v /var/gitlab/logs:/var/log/gitlab \
-  -v /var/gitlab/data:/var/opt/gitlab \
-  gitlab/gitlab-ce:latest
+# Recreate the container with the new image (DATA IS SAFE in /var/gitlab)
+docker compose up -d
 ```
+
+> Docker Compose will automatically stop the old container and start a new one with the updated image. Your data is safe because it is stored in host-mounted volumes.
 
 ### 15.3 Post-Update Verification
 
 ```bash
 # Watch startup logs
-docker logs -f gitlab
+docker compose -f /var/gitlab/docker-compose.yml logs -f
 
 # Once started, verify version
 docker exec -it gitlab gitlab-rake gitlab:env:info
@@ -1458,19 +1475,19 @@ docker exec -it gitlab gitlab-rake gitlab:check SANITIZE=true
 
 ```bash
 # Check container status
-docker ps --filter name=gitlab
+docker compose -f /var/gitlab/docker-compose.yml ps
 
 # Stop GitLab
-docker stop gitlab
+docker compose -f /var/gitlab/docker-compose.yml stop
 
 # Start GitLab
-docker start gitlab
+docker compose -f /var/gitlab/docker-compose.yml start
 
 # Restart GitLab
-docker restart gitlab
+docker compose -f /var/gitlab/docker-compose.yml restart
 
 # View logs (last 100 lines, follow)
-docker logs -f gitlab --tail 100
+docker compose -f /var/gitlab/docker-compose.yml logs -f --tail 100
 
 # Check resource usage
 docker stats gitlab --no-stream
@@ -1572,10 +1589,11 @@ docker exec -it gitlab gitlab-rake "gitlab:password:reset[root]"
 
 | Task                  | Command                                                              |
 |-----------------------|----------------------------------------------------------------------|
-| Start GitLab          | `docker start gitlab`                                                |
-| Stop GitLab           | `docker stop gitlab`                                                 |
-| Restart GitLab        | `docker restart gitlab`                                              |
-| View logs             | `docker logs -f gitlab --tail 100`                                   |
+| Start GitLab          | `docker compose -f /var/gitlab/docker-compose.yml start`             |
+| Stop GitLab           | `docker compose -f /var/gitlab/docker-compose.yml stop`              |
+| Restart GitLab        | `docker compose -f /var/gitlab/docker-compose.yml restart`           |
+| View logs             | `docker compose -f /var/gitlab/docker-compose.yml logs -f --tail 100`|
+| Update GitLab         | `cd /var/gitlab && docker compose pull && docker compose up -d`      |
 | Reconfigure           | `docker exec -it gitlab gitlab-ctl reconfigure`                      |
 | Service status        | `docker exec -it gitlab gitlab-ctl status`                           |
 | Manual backup         | `docker exec -t gitlab gitlab-backup create`                         |
@@ -1586,14 +1604,15 @@ docker exec -it gitlab gitlab-rake "gitlab:password:reset[root]"
 
 ### Key Paths on Host
 
-| Path                          | Contents                        |
-|-------------------------------|---------------------------------|
-| `/var/gitlab/config/`         | gitlab.rb, secrets, SSL certs   |
-| `/var/gitlab/config/ssl/`     | TLS certificates and keys       |
-| `/var/gitlab/data/`           | Repositories, DB, uploads       |
-| `/var/gitlab/logs/`           | All GitLab logs                 |
-| `/var/gitlab/backups/`        | Backup archives and logs        |
-| `/var/gitlab/backup-gitlab.sh`| Automated backup script         |
+| Path                           | Contents                        |
+|--------------------------------|---------------------------------|
+| `/var/gitlab/docker-compose.yml`| Docker Compose deployment file  |
+| `/var/gitlab/config/`          | gitlab.rb, secrets, SSL certs   |
+| `/var/gitlab/config/ssl/`      | TLS certificates and keys       |
+| `/var/gitlab/data/`            | Repositories, DB, uploads       |
+| `/var/gitlab/logs/`            | All GitLab logs                 |
+| `/var/gitlab/backups/`         | Backup archives and logs        |
+| `/var/gitlab/backup-gitlab.sh` | Automated backup script         |
 
 ### Key URLs
 
