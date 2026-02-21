@@ -3,7 +3,7 @@
 **Platform:** Oracle Enterprise Linux 9 (OEL 9)
 **Deployment Method:** Docker
 **Edition:** GitLab Community Edition (CE) — Free
-**Document Version:** 1.0
+**Document Version:** 1.2
 **Date:** 2026-02-21
 
 ---
@@ -14,18 +14,19 @@
 2. [Prerequisites & System Requirements](#2-prerequisites--system-requirements)
 3. [Docker Installation](#3-docker-installation)
 4. [Volume Preparation (Permissions & Ownership)](#4-volume-preparation-permissions--ownership)
-5. [SSL Certificate Preparation (Internal CA)](#5-ssl-certificate-preparation-internal-ca)
+5. [SSL Certificate Preparation](#5-ssl-certificate-preparation)
 6. [GitLab Container Deployment](#6-gitlab-container-deployment)
 7. [GitLab Configuration (HTTPS, SSH, Backups)](#7-gitlab-configuration-https-ssh-backups)
 8. [Firewall Configuration](#8-firewall-configuration)
 9. [First Login & Initial Hardening](#9-first-login--initial-hardening)
-10. [Client-Side CA Trust Configuration](#10-client-side-ca-trust-configuration)
-11. [Dual Push: GitLab On-Prem + GitHub](#11-dual-push-gitlab-on-prem--github)
-12. [Importing Projects from GitHub to GitLab](#12-importing-projects-from-github-to-gitlab)
-13. [Backup Strategy](#13-backup-strategy)
-14. [Updating GitLab](#14-updating-gitlab)
-15. [Maintenance & Troubleshooting](#15-maintenance--troubleshooting)
-16. [Quick Reference Card](#16-quick-reference-card)
+10. [Microsoft Entra ID SSO Integration (OIDC)](#10-microsoft-entra-id-sso-integration-oidc)
+11. [Client-Side CA Trust Configuration](#11-client-side-ca-trust-configuration)
+12. [Dual Push: GitLab On-Prem + GitHub](#12-dual-push-gitlab-on-prem--github)
+13. [Importing Projects from GitHub to GitLab](#13-importing-projects-from-github-to-gitlab)
+14. [Backup Strategy](#14-backup-strategy)
+15. [Updating GitLab](#15-updating-gitlab)
+16. [Maintenance & Troubleshooting](#16-maintenance--troubleshooting)
+17. [Quick Reference Card](#17-quick-reference-card)
 
 ---
 
@@ -35,8 +36,9 @@
 
 Deployment of a self-hosted GitLab CE instance running in Docker on OEL 9, with:
 
-- HTTPS using an internal/private CA certificate
+- HTTPS using self-signed or CA-signed certificate (internal or public CA)
 - SSH access on a non-standard port (2222)
+- SSO authentication via Microsoft Entra ID (OpenID Connect)
 - Automated backups (with optional encryption)
 - Dual-push mirroring to GitHub
 - Migration path from GitHub SaaS to GitLab on-prem
@@ -112,16 +114,20 @@ If DNS is not available, add a local hosts entry:
 echo "$(hostname -I | awk '{print $1}') gitlab.yourdomain.com" >> /etc/hosts
 ```
 
-### 2.5 Required Files from Your CA
+### 2.5 SSL Certificate Files
 
-Before proceeding, ensure you have:
+Choose your SSL approach (detailed in [Section 5](#5-ssl-certificate-preparation)):
 
-| File               | Description                           |
-|--------------------|---------------------------------------|
-| `your_domain.crt`  | Your server/domain certificate        |
-| `your_domain.key`  | Your private key                      |
-| `ca_bundle.crt`    | CA chain (intermediates + root CA)    |
-| `your_ca_root.crt` | Your CA root certificate (standalone) |
+**Option A — Self-Signed:** No files needed; you will generate them in Section 5.
+
+**Option B — CA-Signed:** Before proceeding, ensure you have:
+
+| File               | Description                           | Required?                    |
+|--------------------|---------------------------------------|------------------------------|
+| `your_domain.crt`  | Your server/domain certificate        | Yes                          |
+| `your_domain.key`  | Your private key                      | Yes                          |
+| `ca_bundle.crt`    | CA chain (intermediates + root CA)    | Yes (if provided by your CA) |
+| `your_ca_root.crt` | Your CA root certificate (standalone) | Internal CA only             |
 
 ---
 
@@ -282,71 +288,106 @@ Expected output:
 
 ---
 
-## 5. SSL Certificate Preparation (Internal CA)
+## 5. SSL Certificate Preparation
 
-### 5.1 Create the Full-Chain Certificate
+Choose one of the two options below based on your environment:
 
-The certificate file must contain: **server cert → intermediate(s) → root CA**, in that order.
+| Option | Best For | Browser Trust | Client-Side Setup |
+|---|---|---|---|
+| **A — Self-Signed** | Lab, testing, internal-only with no CA | No — browsers show warning | Must install cert on every client |
+| **B — CA-Signed Certificate** | Production, any environment with a CA (internal or public) | Yes (if CA is trusted) | Only needed for internal/private CAs |
+
+---
+
+### Option A: Self-Signed Certificate
+
+> **Use this if** you don't have a Certificate Authority and need a quick, working HTTPS setup. Browsers will show a security warning, and developers will need to install the certificate or configure Git to trust it.
+
+#### 5A.1 Generate Self-Signed Certificate
 
 ```bash
-cat your_domain.crt ca_bundle.crt > /var/gitlab/config/ssl/gitlab.yourdomain.com.crt
+openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
+  -keyout /var/gitlab/config/ssl/gitlab.yourdomain.com.key \
+  -out /var/gitlab/config/ssl/gitlab.yourdomain.com.crt \
+  -subj "/C=SA/ST=Riyadh/L=Riyadh/O=YourOrganization/CN=gitlab.yourdomain.com" \
+  -addext "subjectAltName=DNS:gitlab.yourdomain.com,IP:YOUR.SERVER.IP"
 ```
+
+**Replace:**
+- `gitlab.yourdomain.com` with your actual FQDN
+- `YOUR.SERVER.IP` with your server's IP address
+- `/C=SA/ST=Riyadh/L=Riyadh/O=YourOrganization` with your details
 
 > **CRITICAL:** The filename MUST match the FQDN used in `external_url`.
-> If your URL will be `https://gitlab.yourdomain.com`, the file must be named `gitlab.yourdomain.com.crt`.
+> If your URL is `https://gitlab.yourdomain.com`, the files must be named `gitlab.yourdomain.com.crt` and `gitlab.yourdomain.com.key`.
 
-### 5.2 Copy the Private Key
-
-```bash
-cp your_domain.key /var/gitlab/config/ssl/gitlab.yourdomain.com.key
-```
-
-### 5.3 Copy the CA Root Certificate
-
-This is used so GitLab trusts its own certificate for internal calls (webhooks, API, etc.).
+#### 5A.2 Set Permissions
 
 ```bash
-cp your_ca_root.crt /var/gitlab/config/ssl/your_ca_root.crt
-```
-
-### 5.4 Set Certificate Permissions
-
-```bash
-# Private key — most restrictive
 chmod 600 /var/gitlab/config/ssl/gitlab.yourdomain.com.key
-
-# Certificates — readable
 chmod 644 /var/gitlab/config/ssl/gitlab.yourdomain.com.crt
-chmod 644 /var/gitlab/config/ssl/your_ca_root.crt
-
-# Ownership
 chown root:root /var/gitlab/config/ssl/*
 ```
 
-### 5.5 Verify Certificate and Key Match
+#### 5A.3 Verify the Certificate
 
 ```bash
-# These two commands MUST produce the same MD5 hash
+# View certificate details
+openssl x509 -in /var/gitlab/config/ssl/gitlab.yourdomain.com.crt -text -noout | head -15
+
+# Verify cert and key match
 openssl x509 -noout -modulus -in /var/gitlab/config/ssl/gitlab.yourdomain.com.crt | md5sum
 openssl rsa  -noout -modulus -in /var/gitlab/config/ssl/gitlab.yourdomain.com.key | md5sum
 ```
 
-If the hashes do NOT match, the certificate and key do not belong together. Do not proceed.
+Both md5sums must match.
 
-### 5.6 Verify Certificate Details
+#### 5A.4 Certificate Renewal
+
+Self-signed certificates expire (365 days with the command above). To renew, re-run the `openssl req` command from Step 5A.1 and then restart NGINX:
 
 ```bash
-# View certificate subject and issuer
-openssl x509 -in /var/gitlab/config/ssl/gitlab.yourdomain.com.crt -text -noout | head -20
-
-# Verify chain of trust
-openssl verify -CAfile /var/gitlab/config/ssl/your_ca_root.crt \
-  /var/gitlab/config/ssl/gitlab.yourdomain.com.crt
+docker exec -it gitlab gitlab-ctl restart nginx
 ```
 
-Expected output: `gitlab.yourdomain.com.crt: OK`
+#### 5A.5 Client-Side Trust for Self-Signed
 
-### 5.7 Verify Final SSL Directory
+Since there is no CA, every client must trust the certificate directly. See [Section 11](#11-client-side-ca-trust-configuration) — use the `gitlab.yourdomain.com.crt` file instead of a CA root certificate.
+
+Developer Git configuration:
+
+```bash
+# Trust the self-signed cert for Git operations
+git config --global http.sslCAInfo /path/to/gitlab.yourdomain.com.crt
+```
+
+#### 5A.6 gitlab.rb Configuration (Self-Signed)
+
+When configuring `gitlab.rb` in [Section 7](#7-gitlab-configuration-https-ssh-backups), use:
+
+```ruby
+##############################################
+# NGINX / SSL CONFIGURATION (Self-Signed)
+##############################################
+nginx['ssl_certificate']           = "/etc/gitlab/ssl/gitlab.yourdomain.com.crt"
+nginx['ssl_certificate_key']       = "/etc/gitlab/ssl/gitlab.yourdomain.com.key"
+nginx['redirect_http_to_https']    = true
+nginx['ssl_protocols']             = "TLSv1.2 TLSv1.3"
+nginx['ssl_ciphers']               = "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384"
+nginx['ssl_prefer_server_ciphers'] = "on"
+
+##############################################
+# INTERNAL TRUST (Self-Signed)
+# Required for GitLab to trust its own cert
+##############################################
+gitlab_workhorse['env'] = {
+  'SSL_CERT_FILE' => '/etc/gitlab/ssl/gitlab.yourdomain.com.crt'
+}
+```
+
+> **Note:** For self-signed, the `SSL_CERT_FILE` points to the certificate itself since there is no separate CA root.
+
+#### 5A.7 Final SSL Directory (Self-Signed)
 
 ```bash
 ls -la /var/gitlab/config/ssl/
@@ -359,7 +400,176 @@ drwx------  root root  .
 drwxr-xr-x  root root  ..
 -rw-r--r--  root root  gitlab.yourdomain.com.crt
 -rw-------  root root  gitlab.yourdomain.com.key
+```
+
+---
+
+### Option B: CA-Signed Certificate (Internal or Public CA)
+
+> **Use this if** you have a Certificate Authority — either an internal/private CA (e.g., Active Directory Certificate Services, HashiCorp Vault) or a public CA (e.g., DigiCert, Let's Encrypt, Sectigo).
+
+#### 5B.1 Identify Your Certificate Type
+
+| Type | Issuer Example | Browser Trust | Client CA Setup |
+|---|---|---|---|
+| **Public CA** | DigiCert, Let's Encrypt, Sectigo, GoDaddy | Trusted automatically | Not needed |
+| **Internal/Private CA** | AD CS, internal PKI, custom OpenSSL CA | Not trusted by default | Required (see Section 11) |
+
+#### 5B.2 Required Files
+
+You should have the following from your CA:
+
+| File | Description |
+|---|---|
+| `your_domain.crt` | Your server/domain certificate |
+| `your_domain.key` | Your private key |
+| `ca_bundle.crt` | CA chain (intermediates + root) — may not be needed for some public CAs |
+| `your_ca_root.crt` | CA root certificate (for internal CAs only) |
+
+#### 5B.3 Create the Full-Chain Certificate
+
+The certificate file must contain: **server cert → intermediate(s) → root CA**, in that order.
+
+```bash
+cat your_domain.crt ca_bundle.crt > /var/gitlab/config/ssl/gitlab.yourdomain.com.crt
+```
+
+> **CRITICAL:** The filename MUST match the FQDN used in `external_url`.
+> If your URL is `https://gitlab.yourdomain.com`, the file must be named `gitlab.yourdomain.com.crt`.
+
+> **Public CA note:** If your public CA (e.g., DigiCert) provides a separate intermediate certificate, download it from the CA's website and include it in the chain. Example for DigiCert:
+> ```bash
+> curl -o digicert_intermediate.crt \
+>   https://cacerts.digicert.com/DigiCertGlobalG2TLSRSASHA2562020CA1-1.crt.pem
+> cat your_domain.crt digicert_intermediate.crt > /var/gitlab/config/ssl/gitlab.yourdomain.com.crt
+> ```
+
+#### 5B.4 Copy the Private Key
+
+```bash
+cp your_domain.key /var/gitlab/config/ssl/gitlab.yourdomain.com.key
+```
+
+#### 5B.5 Copy the CA Root Certificate (Internal CA Only)
+
+This is used so GitLab trusts its own certificate for internal calls (webhooks, API, etc.).
+
+```bash
+# Only needed for internal/private CAs
+cp your_ca_root.crt /var/gitlab/config/ssl/your_ca_root.crt
+```
+
+> **Public CA:** Skip this step. Public CA roots are already in the system trust store.
+
+#### 5B.6 Set Certificate Permissions
+
+```bash
+# Private key — most restrictive
+chmod 600 /var/gitlab/config/ssl/gitlab.yourdomain.com.key
+
+# Certificates — readable
+chmod 644 /var/gitlab/config/ssl/gitlab.yourdomain.com.crt
+
+# CA root (if present)
+[ -f /var/gitlab/config/ssl/your_ca_root.crt ] && chmod 644 /var/gitlab/config/ssl/your_ca_root.crt
+
+# Ownership
+chown root:root /var/gitlab/config/ssl/*
+```
+
+#### 5B.7 Verify Certificate and Key Match
+
+```bash
+# These two commands MUST produce the same MD5 hash
+openssl x509 -noout -modulus -in /var/gitlab/config/ssl/gitlab.yourdomain.com.crt | md5sum
+openssl rsa  -noout -modulus -in /var/gitlab/config/ssl/gitlab.yourdomain.com.key | md5sum
+```
+
+If the hashes do NOT match, the certificate and key do not belong together. Do not proceed.
+
+#### 5B.8 Verify Certificate Details
+
+```bash
+# View certificate subject and issuer
+openssl x509 -in /var/gitlab/config/ssl/gitlab.yourdomain.com.crt -text -noout | head -20
+
+# Verify chain of trust (internal CA)
+openssl verify -CAfile /var/gitlab/config/ssl/your_ca_root.crt \
+  /var/gitlab/config/ssl/gitlab.yourdomain.com.crt
+
+# Verify chain of trust (public CA — uses system trust store)
+openssl verify /var/gitlab/config/ssl/gitlab.yourdomain.com.crt
+```
+
+Expected output: `gitlab.yourdomain.com.crt: OK`
+
+#### 5B.9 gitlab.rb Configuration (CA-Signed)
+
+When configuring `gitlab.rb` in [Section 7](#7-gitlab-configuration-https-ssh-backups), use:
+
+**For Internal/Private CA:**
+
+```ruby
+##############################################
+# NGINX / SSL CONFIGURATION (Internal CA)
+##############################################
+nginx['ssl_certificate']           = "/etc/gitlab/ssl/gitlab.yourdomain.com.crt"
+nginx['ssl_certificate_key']       = "/etc/gitlab/ssl/gitlab.yourdomain.com.key"
+nginx['redirect_http_to_https']    = true
+nginx['ssl_protocols']             = "TLSv1.2 TLSv1.3"
+nginx['ssl_ciphers']               = "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384"
+nginx['ssl_prefer_server_ciphers'] = "on"
+
+##############################################
+# INTERNAL CA TRUST
+# Required for GitLab to trust its own cert
+##############################################
+gitlab_workhorse['env'] = {
+  'SSL_CERT_FILE' => '/etc/gitlab/ssl/your_ca_root.crt'
+}
+```
+
+**For Public CA (DigiCert, Let's Encrypt, etc.):**
+
+```ruby
+##############################################
+# NGINX / SSL CONFIGURATION (Public CA)
+##############################################
+nginx['ssl_certificate']           = "/etc/gitlab/ssl/gitlab.yourdomain.com.crt"
+nginx['ssl_certificate_key']       = "/etc/gitlab/ssl/gitlab.yourdomain.com.key"
+nginx['redirect_http_to_https']    = true
+nginx['ssl_protocols']             = "TLSv1.2 TLSv1.3"
+nginx['ssl_ciphers']               = "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384"
+nginx['ssl_prefer_server_ciphers'] = "on"
+
+# No gitlab_workhorse SSL_CERT_FILE needed — public CAs are already trusted
+```
+
+> **Client-side:** Internal/private CA requires client-side trust setup (see [Section 11](#11-client-side-ca-trust-configuration)). Public CA does not.
+
+#### 5B.10 Final SSL Directory (CA-Signed)
+
+```bash
+ls -la /var/gitlab/config/ssl/
+```
+
+**Internal CA — expected:**
+
+```
+drwx------  root root  .
+drwxr-xr-x  root root  ..
+-rw-r--r--  root root  gitlab.yourdomain.com.crt
+-rw-------  root root  gitlab.yourdomain.com.key
 -rw-r--r--  root root  your_ca_root.crt
+```
+
+**Public CA — expected:**
+
+```
+drwx------  root root  .
+drwxr-xr-x  root root  ..
+-rw-r--r--  root root  gitlab.yourdomain.com.crt
+-rw-------  root root  gitlab.yourdomain.com.key
 ```
 
 ---
@@ -435,6 +645,8 @@ external_url 'https://gitlab.yourdomain.com'
 
 ##############################################
 # NGINX / SSL CONFIGURATION
+# Use the SSL block matching your certificate
+# type from Section 5 (Option A or B)
 ##############################################
 nginx['ssl_certificate']           = "/etc/gitlab/ssl/gitlab.yourdomain.com.crt"
 nginx['ssl_certificate_key']       = "/etc/gitlab/ssl/gitlab.yourdomain.com.key"
@@ -444,13 +656,21 @@ nginx['ssl_ciphers']               = "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AE
 nginx['ssl_prefer_server_ciphers'] = "on"
 
 ##############################################
-# INTERNAL CA TRUST
+# INTERNAL CA / SELF-SIGNED TRUST
 # Required for GitLab to trust its own cert
 # for internal API calls and webhooks
+#
+# Self-Signed:  point to the .crt file itself
+# Internal CA:  point to your CA root cert
+# Public CA:    REMOVE this block entirely
 ##############################################
 gitlab_workhorse['env'] = {
   'SSL_CERT_FILE' => '/etc/gitlab/ssl/your_ca_root.crt'
 }
+# ^^^ See Section 5 for the correct value:
+#   Self-Signed:  '/etc/gitlab/ssl/gitlab.yourdomain.com.crt'
+#   Internal CA:  '/etc/gitlab/ssl/your_ca_root.crt'
+#   Public CA:    Remove the gitlab_workhorse block above
 
 ##############################################
 # SSH PORT
@@ -470,7 +690,7 @@ gitlab_rails['backup_path']       = "/var/opt/gitlab/backups"
 gitlab_rails['backup_keep_time']  = 604800
 ```
 
-> **Note:** Backups are unencrypted by default. See [Section 13.5](#135-optional-enable-backup-encryption) to enable encryption.
+> **Note:** Backups are unencrypted by default. See [Section 14.5](#145-optional-enable-backup-encryption) to enable encryption.
 
 ### 7.3 Apply Configuration
 
@@ -553,11 +773,251 @@ Perform these actions immediately after first login:
 
 ---
 
-## 10. Client-Side CA Trust Configuration
+## 10. Microsoft Entra ID SSO Integration (OIDC)
 
-Every developer machine that connects to GitLab must trust your internal CA.
+GitLab CE (free, self-managed) **fully supports SSO** via OpenID Connect (OIDC) with Microsoft Entra ID (formerly Azure AD). No paid GitLab license is required.
 
-### 10.1 Linux (RHEL/OEL/CentOS/Fedora)
+> **Why OIDC over SAML?** OIDC is the recommended approach for Entra ID integration. It uses the modern Microsoft identity platform (v2.0) endpoint and is simpler to configure than SAML.
+
+### 10.1 What You Get with SSO
+
+| Feature | Supported in CE (Free)? |
+|---|---|
+| Instance-level SSO via OIDC | Yes |
+| Instance-level SSO via SAML | Yes |
+| Login with Microsoft Entra ID | Yes |
+| Auto-create users on first login | Yes |
+| Group-level SAML SSO | No (Premium only) |
+| SCIM provisioning (auto user sync) | No (Premium only) |
+
+### 10.2 Step 1: Create App Registration in Entra ID
+
+1. Go to **Microsoft Entra admin center** → **Identity** → **Applications** → **App registrations**
+2. Click **New registration**
+3. Fill in:
+   - **Name:** `GitLab SSO`
+   - **Supported account types:** "Accounts in this organizational directory only" (single tenant)
+   - **Redirect URI:** Select **Web** and enter:
+     ```
+     https://gitlab.yourdomain.com/users/auth/openid_connect/callback
+     ```
+4. Click **Register**
+
+### 10.3 Step 2: Create Client Secret
+
+1. In your new app registration, go to **Certificates & secrets**
+2. Click **New client secret**
+3. Add a description (e.g., `GitLab OIDC`) and select expiration (recommended: 24 months)
+4. Click **Add**
+5. **Copy the secret Value immediately** — it will not be shown again
+
+### 10.4 Step 3: Configure API Permissions
+
+1. Go to **API permissions**
+2. Click **Add a permission** → **Microsoft Graph** → **Delegated permissions**
+3. Add the following permissions:
+   - `email`
+   - `openid`
+   - `profile`
+4. Click **Add permissions**
+5. Click **Grant admin consent for [your organization]**
+6. Verify all permissions show a green checkmark under "Status"
+
+### 10.5 Step 4: Gather Required Values
+
+From the app registration **Overview** page, record these values:
+
+| Value | Where to Find | Used As |
+|---|---|---|
+| **Application (client) ID** | Overview page | `identifier` in gitlab.rb |
+| **Directory (tenant) ID** | Overview page | Part of `issuer` URL in gitlab.rb |
+| **Client secret value** | Certificates & secrets (copied in Step 2) | `secret` in gitlab.rb |
+
+### 10.6 Step 5: Configure GitLab
+
+Edit the GitLab configuration:
+
+```bash
+vi /var/gitlab/config/gitlab.rb
+```
+
+Add the following block (replace the placeholder values):
+
+```ruby
+##############################################
+# MICROSOFT ENTRA ID SSO (OpenID Connect)
+##############################################
+
+# Allow users to sign in via Entra ID
+gitlab_rails['omniauth_enabled'] = true
+
+# Allow first-time SSO users to be created automatically
+gitlab_rails['omniauth_allow_single_sign_on'] = ['openid_connect']
+
+# Automatically link Entra ID accounts to existing GitLab accounts
+# if the email matches (set to false if you want manual linking)
+gitlab_rails['omniauth_auto_link_user'] = ['openid_connect']
+
+# Block login via password for SSO users (optional — set true to enforce SSO-only)
+gitlab_rails['omniauth_block_auto_created_users'] = false
+
+gitlab_rails['omniauth_providers'] = [
+  {
+    name: "openid_connect",
+    label: "Microsoft Entra ID",
+    args: {
+      name: "openid_connect",
+      scope: ["openid", "profile", "email"],
+      response_type: "code",
+      issuer: "https://login.microsoftonline.com/YOUR-TENANT-ID/v2.0",
+      discovery: true,
+      client_auth_method: "query",
+      uid_field: "sub",
+      send_scope_to_token_endpoint: "false",
+      pkce: true,
+      client_options: {
+        identifier: "YOUR-CLIENT-ID",
+        secret: "YOUR-CLIENT-SECRET",
+        redirect_uri: "https://gitlab.yourdomain.com/users/auth/openid_connect/callback"
+      }
+    }
+  }
+]
+```
+
+**Replace the following placeholders:**
+
+| Placeholder | Replace With |
+|---|---|
+| `YOUR-TENANT-ID` | Directory (tenant) ID from Entra ID |
+| `YOUR-CLIENT-ID` | Application (client) ID from Entra ID |
+| `YOUR-CLIENT-SECRET` | Client secret value from Step 2 |
+| `gitlab.yourdomain.com` | Your actual GitLab FQDN |
+
+### 10.7 Step 6: Apply Configuration
+
+```bash
+docker exec -it gitlab gitlab-ctl reconfigure
+```
+
+Wait for: `gitlab Reconfigured!`
+
+### 10.8 Step 7: Verify SSO
+
+1. Open `https://gitlab.yourdomain.com` in a browser
+2. You should see a **"Microsoft Entra ID"** button on the login page below the standard username/password fields
+3. Click it — you will be redirected to Microsoft login
+4. After authenticating, you will be redirected back to GitLab and logged in
+5. The user account is auto-created on first login (if `omniauth_allow_single_sign_on` is enabled)
+
+### 10.9 Optional: Enforce SSO-Only Login
+
+To **disable password login** and force all users through Entra ID:
+
+```bash
+vi /var/gitlab/config/gitlab.rb
+```
+
+```ruby
+# Disable password-based sign-in for all users except root
+gitlab_rails['gitlab_signin_enabled'] = false
+```
+
+```bash
+docker exec -it gitlab gitlab-ctl reconfigure
+```
+
+> **WARNING:** Always keep the `root` account accessible via password as a break-glass emergency login. If Entra ID is down, you need a way to access GitLab. The root account can still log in via `https://gitlab.yourdomain.com/users/sign_in?auto_sign_in=false`
+
+### 10.10 Optional: Restrict Access to Specific Entra ID Groups
+
+If you only want members of certain Entra ID groups to access GitLab:
+
+**In Entra ID:**
+
+1. Go to your app registration → **Token configuration**
+2. Click **Add groups claim**
+3. Select **Security groups**
+4. Under "ID" token type, select **Group ID**
+5. Click **Add**
+
+**In gitlab.rb**, add `allowed_groups` to the provider config:
+
+```ruby
+# Inside the args: { ... } block, add:
+allowed_groups: ["YOUR-ENTRA-GROUP-ID-1", "YOUR-ENTRA-GROUP-ID-2"]
+```
+
+> The group IDs are UUIDs from Entra ID (e.g., `55db8574-c392-4e8b-892d-1e086394be9c`). Find them under **Entra ID** → **Groups** → click the group → copy the **Object ID**.
+
+Then reconfigure:
+
+```bash
+docker exec -it gitlab gitlab-ctl reconfigure
+```
+
+### 10.11 Troubleshooting SSO
+
+#### "Redirect URI mismatch" error
+
+The redirect URI in Entra ID must **exactly** match the one in `gitlab.rb`:
+
+```
+https://gitlab.yourdomain.com/users/auth/openid_connect/callback
+```
+
+Check for trailing slashes, http vs https, and FQDN mismatches.
+
+#### "SSL certificate problem" during SSO
+
+If GitLab cannot reach `login.microsoftonline.com` due to SSL inspection or proxy:
+
+```bash
+# Add your corporate proxy CA to GitLab's trusted certs
+cp your_proxy_ca.crt /var/gitlab/config/trusted-certs/
+docker exec -it gitlab gitlab-ctl reconfigure
+```
+
+#### SSO button does not appear on login page
+
+```bash
+# Verify OmniAuth is enabled
+docker exec -it gitlab grep -i omniauth /etc/gitlab/gitlab.rb
+
+# Check GitLab logs for OIDC errors
+docker exec -it gitlab gitlab-ctl tail puma
+```
+
+#### User gets "Forbidden" after SSO login
+
+Check if `omniauth_block_auto_created_users` is set to `true`. If so, an admin must manually approve the user in **Admin Area** → **Users** → **Pending approval**.
+
+#### Check OIDC discovery endpoint
+
+Verify GitLab can reach the Entra ID OIDC discovery URL:
+
+```bash
+docker exec -it gitlab curl -s \
+  "https://login.microsoftonline.com/YOUR-TENANT-ID/v2.0/.well-known/openid-configuration" | head -5
+```
+
+If this fails, check outbound internet/firewall rules from the GitLab server.
+
+---
+
+## 11. Client-Side CA Trust Configuration
+
+> **When is this section needed?**
+>
+> | Certificate Type | Client-Side Setup Required? |
+> |---|---|
+> | Self-Signed (Option A) | Yes — install the `.crt` file on every client |
+> | Internal/Private CA (Option B) | Yes — install the CA root cert on every client |
+> | Public CA — DigiCert, Let's Encrypt, etc. (Option B) | No — skip this section entirely |
+
+Every developer machine that connects to GitLab must trust the certificate. For **self-signed**, distribute the `gitlab.yourdomain.com.crt` file. For **internal CA**, distribute the `your_ca_root.crt` file.
+
+### 11.1 Linux (RHEL/OEL/CentOS/Fedora)
 
 ```bash
 # Copy CA root to system trust store
@@ -568,7 +1028,7 @@ sudo update-ca-trust
 git config --global http.sslCAInfo /etc/pki/ca-trust/source/anchors/your_ca_root.crt
 ```
 
-### 10.2 Linux (Ubuntu/Debian)
+### 11.2 Linux (Ubuntu/Debian)
 
 ```bash
 sudo cp your_ca_root.crt /usr/local/share/ca-certificates/your_ca_root.crt
@@ -577,7 +1037,7 @@ sudo update-ca-certificates
 git config --global http.sslCAInfo /usr/local/share/ca-certificates/your_ca_root.crt
 ```
 
-### 10.3 macOS
+### 11.3 macOS
 
 ```bash
 sudo security add-trusted-cert -d -r trustRoot \
@@ -586,7 +1046,7 @@ sudo security add-trusted-cert -d -r trustRoot \
 git config --global http.sslCAInfo /path/to/your_ca_root.crt
 ```
 
-### 10.4 Windows
+### 11.4 Windows
 
 ```
 1. Double-click your_ca_root.crt
@@ -603,7 +1063,7 @@ Then configure Git:
 git config --global http.sslCAInfo "C:\path\to\your_ca_root.crt"
 ```
 
-### 10.5 SSH Configuration for Git (All Platforms)
+### 11.5 SSH Configuration for Git (All Platforms)
 
 Each developer adds to `~/.ssh/config`:
 
@@ -623,11 +1083,11 @@ git clone git@gitlab.yourdomain.com:group/project.git
 
 ---
 
-## 11. Dual Push: GitLab On-Prem + GitHub
+## 12. Dual Push: GitLab On-Prem + GitHub
 
 Push to both GitLab and GitHub simultaneously so both repos are always in sync.
 
-### 11.1 Configure Multi-Push on an Existing Repo
+### 12.1 Configure Multi-Push on an Existing Repo
 
 ```bash
 cd /path/to/your/project
@@ -653,14 +1113,14 @@ origin  git@github.com:user/project.git (push)
 origin  ssh://git@gitlab.yourdomain.com:2222/group/project.git (push)
 ```
 
-### 11.2 Usage
+### 12.2 Usage
 
 ```bash
 # Single push goes to BOTH remotes
 git push origin main
 ```
 
-### 11.3 Alternative: Separate Remotes (More Control)
+### 12.3 Alternative: Separate Remotes (More Control)
 
 If you want to push selectively:
 
@@ -678,9 +1138,9 @@ alias gpush='git push origin main && git push gitlab main'
 
 ---
 
-## 12. Importing Projects from GitHub to GitLab
+## 13. Importing Projects from GitHub to GitLab
 
-### 12.1 Method A: GitLab Built-in GitHub Importer (Full Import)
+### 13.1 Method A: GitLab Built-in GitHub Importer (Full Import)
 
 This imports repos, issues, PRs (as merge requests), labels, milestones, and wiki.
 
@@ -690,7 +1150,7 @@ This imports repos, issues, PRs (as merge requests), labels, milestones, and wik
 4. Select repositories to import
 5. Click **Import**
 
-### 12.2 Method B: Git Mirror (Code Only)
+### 13.2 Method B: Git Mirror (Code Only)
 
 For a simple code-only migration:
 
@@ -706,7 +1166,7 @@ git remote set-url origin ssh://git@gitlab.yourdomain.com:2222/group/project.git
 git push --mirror
 ```
 
-### 12.3 Method B Batch Script (Multiple Repos)
+### 13.3 Method B Batch Script (Multiple Repos)
 
 ```bash
 #!/bin/bash
@@ -740,9 +1200,9 @@ done
 
 ---
 
-## 13. Backup Strategy
+## 14. Backup Strategy
 
-### 13.1 What Gets Backed Up
+### 14.1 What Gets Backed Up
 
 GitLab has **two separate backup scopes**:
 
@@ -753,13 +1213,13 @@ GitLab has **two separate backup scopes**:
 
 > **IMPORTANT:** The application backup does **NOT** include `gitlab.rb` or the secrets file. You must back up configuration separately.
 
-### 13.2 Default Backup Behavior
+### 14.2 Default Backup Behavior
 
 By default, GitLab backups are **plain, unencrypted `.tar` files**. Anyone with access to the backup file can extract and read all contents including source code, database, and user data.
 
-For many on-prem environments behind a secured network, this is acceptable. If your backups leave the server or are stored on shared storage, consider enabling encryption (see [Section 13.5](#135-optional-enable-backup-encryption)).
+For many on-prem environments behind a secured network, this is acceptable. If your backups leave the server or are stored on shared storage, consider enabling encryption (see [Section 14.5](#145-optional-enable-backup-encryption)).
 
-### 13.3 Manual Backup
+### 14.3 Manual Backup
 
 ```bash
 # Application backup (output goes to /var/gitlab/data/backups/)
@@ -770,7 +1230,7 @@ tar czf /var/gitlab/backups/gitlab_config_$(date +%Y%m%d_%H%M%S).tar.gz \
   -C /var/gitlab config/
 ```
 
-### 13.4 Automated Daily Backup Script
+### 14.4 Automated Daily Backup Script
 
 Create the backup script:
 
@@ -820,11 +1280,11 @@ chmod 700 /var/gitlab/backup-gitlab.sh
 crontab -l
 ```
 
-### 13.5 OPTIONAL: Enable Backup Encryption
+### 14.5 OPTIONAL: Enable Backup Encryption
 
 > **This section is optional.** Enable encryption if backups are stored on shared/remote storage, transferred off-server, or if your security policy requires it.
 
-#### 13.5.1 Enable Application Backup Encryption
+#### 14.5.1 Enable Application Backup Encryption
 
 Edit `gitlab.rb`:
 
@@ -850,7 +1310,7 @@ docker exec -it gitlab gitlab-ctl reconfigure
 
 From this point forward, all application backups created by `gitlab-backup create` will be AES-256 encrypted.
 
-#### 13.5.2 Enable Configuration Backup Encryption
+#### 14.5.2 Enable Configuration Backup Encryption
 
 Replace the config backup line in the backup script (`/var/gitlab/backup-gitlab.sh`) with:
 
@@ -869,7 +1329,7 @@ Also update the cleanup section to match:
 find "$LOG_DIR" -name "*.tar.gz.enc" -mtime +7 -delete >> "$LOG" 2>&1
 ```
 
-#### 13.5.3 Decrypting an Encrypted Config Backup
+#### 14.5.3 Decrypting an Encrypted Config Backup
 
 ```bash
 openssl enc -d -aes-256-cbc -pbkdf2 \
@@ -880,7 +1340,7 @@ openssl enc -d -aes-256-cbc -pbkdf2 \
 tar xzf gitlab_config_decrypted.tar.gz
 ```
 
-#### 13.5.4 Encryption Key Management — CRITICAL
+#### 14.5.4 Encryption Key Management — CRITICAL
 
 > **WARNING: READ THIS CAREFULLY BEFORE ENABLING ENCRYPTION**
 
@@ -912,7 +1372,7 @@ tar xzf gitlab_config_decrypted.tar.gz
 
 **Best practice:** Store the key in **at least two separate secure locations** and test decryption periodically to confirm the key works.
 
-### 13.6 Restoring from Backup
+### 14.6 Restoring from Backup
 
 ```bash
 # Stop processes that connect to the database
@@ -936,9 +1396,9 @@ docker exec -it gitlab gitlab-rake gitlab:check SANITIZE=true
 
 ---
 
-## 14. Updating GitLab
+## 15. Updating GitLab
 
-### 14.1 Pre-Update Checklist
+### 15.1 Pre-Update Checklist
 
 ```bash
 # 1. Check current version
@@ -952,7 +1412,7 @@ tar czf /var/gitlab/backups/pre_update_config_$(date +%Y%m%d).tar.gz \
   -C /var/gitlab config/
 ```
 
-### 14.2 Perform the Update
+### 15.2 Perform the Update
 
 ```bash
 # Pull latest image
@@ -977,7 +1437,7 @@ docker run -d \
   gitlab/gitlab-ce:latest
 ```
 
-### 14.3 Post-Update Verification
+### 15.3 Post-Update Verification
 
 ```bash
 # Watch startup logs
@@ -992,9 +1452,9 @@ docker exec -it gitlab gitlab-rake gitlab:check SANITIZE=true
 
 ---
 
-## 15. Maintenance & Troubleshooting
+## 16. Maintenance & Troubleshooting
 
-### 15.1 Container Management
+### 16.1 Container Management
 
 ```bash
 # Check container status
@@ -1016,7 +1476,7 @@ docker logs -f gitlab --tail 100
 docker stats gitlab --no-stream
 ```
 
-### 15.2 GitLab Internal Services
+### 16.2 GitLab Internal Services
 
 ```bash
 # Check all service statuses
@@ -1036,7 +1496,7 @@ docker exec -it gitlab gitlab-ctl tail nginx
 docker exec -it gitlab gitlab-ctl tail puma
 ```
 
-### 15.3 Health Checks
+### 16.3 Health Checks
 
 ```bash
 # Full system check
@@ -1050,7 +1510,7 @@ openssl s_client -connect gitlab.yourdomain.com:443 -showcerts </dev/null 2>/dev
 docker exec -it gitlab gitlab-rake gitlab:env:info
 ```
 
-### 15.4 Common Issues
+### 16.4 Common Issues
 
 #### Container won't start — port conflict
 
@@ -1106,7 +1566,7 @@ docker exec -it gitlab gitlab-rake "gitlab:password:reset[root]"
 
 ---
 
-## 16. Quick Reference Card
+## 17. Quick Reference Card
 
 ### Essential Commands
 
