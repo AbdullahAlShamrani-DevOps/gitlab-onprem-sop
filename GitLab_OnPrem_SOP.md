@@ -651,6 +651,8 @@ docker compose -f /var/gitlab/docker-compose.yml logs -f
 
 Wait until you see `gitlab Reconfigured!`, then press `Ctrl+C`.
 
+> **How to know GitLab is ready:** After the initial `Reconfigured!` message, the logs will show repeating health-check entries (e.g., `GET /database`, `GET /sidekiq`, `GET /ruby`, `GET /-/metrics`). This is **normal steady-state behavior** — it means all services are running and GitLab is ready to use. Press `Ctrl+C` to exit the log view.
+
 ---
 
 ## 7. GitLab Configuration (HTTPS, SSH, Backups)
@@ -663,7 +665,17 @@ vi /var/gitlab/config/gitlab.rb
 
 ### 7.2 Configuration Block
 
-Add or modify the following sections in `gitlab.rb`:
+Add or modify the following sections in `gitlab.rb`. **Choose the correct SSL trust block based on your certificate type:**
+
+> **IMPORTANT — Read Before Configuring:**
+>
+> | Certificate Type | `gitlab_workhorse` SSL_CERT_FILE | Action |
+> |---|---|---|
+> | **Self-Signed** (Option A) | Point to the `.crt` file itself | **Required** |
+> | **Internal/Private CA** (Option B) | Point to your CA root cert | **Required** |
+> | **Public CA** — DigiCert, Let's Encrypt, etc. (Option B) | **DO NOT ADD this block** | **Skip it entirely** |
+>
+> Public CAs (DigiCert, Let's Encrypt, Sectigo, GoDaddy, etc.) are already in the system trust store. Adding `gitlab_workhorse SSL_CERT_FILE` is unnecessary and can cause issues.
 
 ```ruby
 ##############################################
@@ -673,8 +685,6 @@ external_url 'https://gitlab.yourdomain.com'
 
 ##############################################
 # NGINX / SSL CONFIGURATION
-# Use the SSL block matching your certificate
-# type from Section 5 (Option A or B)
 ##############################################
 nginx['ssl_certificate']           = "/etc/gitlab/ssl/gitlab.yourdomain.com.crt"
 nginx['ssl_certificate_key']       = "/etc/gitlab/ssl/gitlab.yourdomain.com.key"
@@ -685,20 +695,23 @@ nginx['ssl_prefer_server_ciphers'] = "on"
 
 ##############################################
 # INTERNAL CA / SELF-SIGNED TRUST
-# Required for GitLab to trust its own cert
-# for internal API calls and webhooks
 #
-# Self-Signed:  point to the .crt file itself
-# Internal CA:  point to your CA root cert
-# Public CA:    REMOVE this block entirely
+# >>> PUBLIC CA (DigiCert, Let's Encrypt, etc.):
+#     DO NOT add this block. Delete or skip it.
+#     Public CAs are already trusted by the system.
+#
+# >>> SELF-SIGNED CERTIFICATE:
+#     Uncomment and point to the .crt file:
+#     gitlab_workhorse['env'] = {
+#       'SSL_CERT_FILE' => '/etc/gitlab/ssl/gitlab.yourdomain.com.crt'
+#     }
+#
+# >>> INTERNAL/PRIVATE CA:
+#     Uncomment and point to your CA root cert:
+#     gitlab_workhorse['env'] = {
+#       'SSL_CERT_FILE' => '/etc/gitlab/ssl/your_ca_root.crt'
+#     }
 ##############################################
-gitlab_workhorse['env'] = {
-  'SSL_CERT_FILE' => '/etc/gitlab/ssl/your_ca_root.crt'
-}
-# ^^^ See Section 5 for the correct value:
-#   Self-Signed:  '/etc/gitlab/ssl/gitlab.yourdomain.com.crt'
-#   Internal CA:  '/etc/gitlab/ssl/your_ca_root.crt'
-#   Public CA:    Remove the gitlab_workhorse block above
 
 ##############################################
 # SSH PORT
