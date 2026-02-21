@@ -3,7 +3,7 @@
 **Platform:** Oracle Enterprise Linux 9 (OEL 9)
 **Deployment Method:** Docker Compose
 **Edition:** GitLab Community Edition (CE) — Free
-**Document Version:** 1.3
+**Document Version:** 1.4
 **Date:** 2026-02-21
 
 ---
@@ -27,6 +27,10 @@
 15. [Updating GitLab](#15-updating-gitlab)
 16. [Maintenance & Troubleshooting](#16-maintenance--troubleshooting)
 17. [Quick Reference Card](#17-quick-reference-card)
+18. [SMTP / Email Notification Configuration](#18-smtp--email-notification-configuration)
+19. [Essential Git Commands Reference](#19-essential-git-commands-reference)
+20. [Monitoring with Site24x7](#20-monitoring-with-site24x7)
+21. [User & Group Management Best Practices](#21-user--group-management-best-practices)
 
 ---
 
@@ -42,6 +46,10 @@ Deployment of a self-hosted GitLab CE instance running in Docker on OEL 9, with:
 - Automated backups (with optional encryption)
 - Dual-push mirroring to GitHub
 - Migration path from GitHub SaaS to GitLab on-prem
+- SMTP email notification setup (Office 365, Gmail, generic SMTP)
+- Essential Git commands reference for developers
+- Monitoring integration with Site24x7
+- User and group management with role-based access
 
 ### GitLab Self-Managed vs GitLab SaaS (Free Tier)
 
@@ -1614,6 +1622,7 @@ docker exec -it gitlab gitlab-rake "gitlab:password:reset[root]"
 | Health check          | `docker exec -it gitlab gitlab-rake gitlab:check SANITIZE=true`      |
 | Reset root password   | `docker exec -it gitlab gitlab-rake "gitlab:password:reset[root]"`   |
 | Restart NGINX         | `docker exec -it gitlab gitlab-ctl restart nginx`                    |
+| Test email delivery   | `docker exec -it gitlab gitlab-rails console` then `Notify.test_email('user@example.com','Test','Body').deliver_now` |
 
 ### Key Paths on Host
 
@@ -1634,6 +1643,8 @@ docker exec -it gitlab gitlab-rake "gitlab:password:reset[root]"
 | `https://gitlab.yourdomain.com`            | Web UI             |
 | `https://gitlab.yourdomain.com/admin`      | Admin Area         |
 | `https://gitlab.yourdomain.com/-/health`   | Health check endpoint |
+| `https://gitlab.yourdomain.com/-/readiness`| Readiness probe       |
+| `https://gitlab.yourdomain.com/-/liveness` | Liveness probe        |
 
 ### Ports
 
@@ -1642,6 +1653,752 @@ docker exec -it gitlab gitlab-rake "gitlab:password:reset[root]"
 | 443  | HTTPS (Web UI + API)    |
 | 80   | HTTP (redirects to 443) |
 | 2222 | Git over SSH            |
+
+---
+
+## 18. SMTP / Email Notification Configuration
+
+GitLab sends email notifications for merge requests, CI/CD pipeline results, mentions, password resets, and more. SMTP must be explicitly configured — GitLab does not send emails out of the box.
+
+### 18.1 Sender Identity Configuration
+
+Edit `gitlab.rb`:
+
+```bash
+vi /var/gitlab/config/gitlab.rb
+```
+
+Add the sender identity block:
+
+```ruby
+##############################################
+# EMAIL SENDER IDENTITY
+##############################################
+gitlab_rails['gitlab_email_enabled'] = true
+gitlab_rails['gitlab_email_from']    = 'gitlab@yourdomain.com'
+gitlab_rails['gitlab_email_display_name'] = 'GitLab'
+gitlab_rails['gitlab_email_reply_to'] = 'noreply@yourdomain.com'
+```
+
+> **Replace** `yourdomain.com` with your actual domain.
+
+### 18.2 SMTP Configuration — Office 365 / Exchange Online
+
+```ruby
+##############################################
+# SMTP — OFFICE 365 / EXCHANGE ONLINE
+##############################################
+gitlab_rails['smtp_enable']               = true
+gitlab_rails['smtp_address']              = "smtp.office365.com"
+gitlab_rails['smtp_port']                 = 587
+gitlab_rails['smtp_user_name']            = "gitlab@yourdomain.com"
+gitlab_rails['smtp_password']             = "YOUR-SMTP-PASSWORD"
+gitlab_rails['smtp_domain']               = "yourdomain.com"
+gitlab_rails['smtp_authentication']       = "login"
+gitlab_rails['smtp_enable_starttls_auto'] = true
+gitlab_rails['smtp_tls']                  = false
+gitlab_rails['smtp_openssl_verify_mode']  = 'peer'
+```
+
+**Replace:**
+
+| Placeholder | Replace With |
+|---|---|
+| `gitlab@yourdomain.com` | Your Office 365 mailbox/service account |
+| `YOUR-SMTP-PASSWORD` | The mailbox password or app password |
+| `yourdomain.com` | Your email domain |
+
+> **Note:** If your organization uses MFA (Multi-Factor Authentication), you must generate an **App Password** in the Microsoft 365 portal: **My Account** -> **Security info** -> **App passwords**. Regular passwords will not work with MFA enabled.
+
+### 18.3 SMTP Configuration — Gmail
+
+```ruby
+##############################################
+# SMTP — GMAIL
+##############################################
+gitlab_rails['smtp_enable']               = true
+gitlab_rails['smtp_address']              = "smtp.gmail.com"
+gitlab_rails['smtp_port']                 = 587
+gitlab_rails['smtp_user_name']            = "your-email@gmail.com"
+gitlab_rails['smtp_password']             = "YOUR-APP-PASSWORD"
+gitlab_rails['smtp_domain']               = "gmail.com"
+gitlab_rails['smtp_authentication']       = "login"
+gitlab_rails['smtp_enable_starttls_auto'] = true
+gitlab_rails['smtp_tls']                  = false
+gitlab_rails['smtp_openssl_verify_mode']  = 'peer'
+```
+
+> **WARNING:** Gmail requires an **App Password** — your regular Gmail password will not work. To generate one: enable 2-Step Verification on your Google account, then go to **myaccount.google.com** -> **Security** -> **App passwords** -> generate a password for "Mail".
+
+### 18.4 SMTP Configuration — Generic SMTP Server
+
+```ruby
+##############################################
+# SMTP — GENERIC SMTP SERVER
+##############################################
+gitlab_rails['smtp_enable']               = true
+gitlab_rails['smtp_address']              = "mail.yourdomain.com"
+gitlab_rails['smtp_port']                 = 587
+gitlab_rails['smtp_user_name']            = "gitlab@yourdomain.com"
+gitlab_rails['smtp_password']             = "YOUR-SMTP-PASSWORD"
+gitlab_rails['smtp_domain']               = "yourdomain.com"
+gitlab_rails['smtp_authentication']       = "login"
+gitlab_rails['smtp_enable_starttls_auto'] = true
+gitlab_rails['smtp_tls']                  = false
+gitlab_rails['smtp_openssl_verify_mode']  = 'peer'
+```
+
+**Full SMTP parameter reference:**
+
+| Parameter | Description | Common Values |
+|---|---|---|
+| `smtp_address` | SMTP server hostname | `smtp.office365.com`, `smtp.gmail.com` |
+| `smtp_port` | SMTP port | `587` (STARTTLS), `465` (implicit TLS), `25` (no encryption) |
+| `smtp_user_name` | Authentication username | Usually the full email address |
+| `smtp_password` | Authentication password | App password if MFA is enabled |
+| `smtp_domain` | HELO domain | Your email domain |
+| `smtp_authentication` | Auth method | `login`, `plain`, `cram_md5` |
+| `smtp_enable_starttls_auto` | Upgrade to TLS | `true` for port 587 |
+| `smtp_tls` | Force implicit TLS | `true` for port 465, `false` for 587 |
+| `smtp_openssl_verify_mode` | SSL verification | `peer` (verify), `none` (skip — not recommended) |
+
+### 18.5 Apply Configuration
+
+```bash
+docker exec -it gitlab gitlab-ctl reconfigure
+```
+
+Wait for: `gitlab Reconfigured!`
+
+> **IMPORTANT:** The SMTP password is stored in plaintext in `gitlab.rb`. Restrict file permissions:
+> ```bash
+> chmod 600 /var/gitlab/config/gitlab.rb
+> ```
+
+### 18.6 Test Email Delivery
+
+**Method 1 — Rails Console:**
+
+```bash
+docker exec -it gitlab gitlab-rails console
+```
+
+In the Rails console, run:
+
+```ruby
+Notify.test_email('recipient@example.com', 'GitLab Test Email', 'This is a test email from GitLab.').deliver_now
+```
+
+Expected output: a delivery confirmation with no errors. Check the recipient's inbox (and spam folder).
+
+Type `exit` to leave the console.
+
+**Method 2 — Trigger via UI:**
+
+1. Log into GitLab as admin
+2. Go to **Admin Area** -> **Settings** -> **General** -> **Sign-up restrictions**
+3. Ensure "Send confirmation email on sign-up" is enabled
+4. Create a test user with a valid email — they should receive a confirmation email
+
+### 18.7 Troubleshooting Email Issues
+
+#### Emails not sending
+
+```bash
+# Check Sidekiq logs (Sidekiq processes email jobs)
+docker exec -it gitlab gitlab-ctl tail sidekiq | grep -i mail
+
+# Check production logs for email errors
+docker exec -it gitlab gitlab-ctl tail puma | grep -i smtp
+```
+
+#### SMTP authentication failure
+
+- Verify credentials are correct in `gitlab.rb`
+- If using MFA, ensure you are using an **App Password**, not your regular password
+- Test SMTP connectivity from inside the container:
+
+```bash
+docker exec -it gitlab openssl s_client -starttls smtp \
+  -connect smtp.office365.com:587
+```
+
+#### SSL/TLS errors
+
+| Port | Setting | Use Case |
+|---|---|---|
+| 587 | `smtp_enable_starttls_auto = true`, `smtp_tls = false` | STARTTLS (most common) |
+| 465 | `smtp_enable_starttls_auto = false`, `smtp_tls = true` | Implicit TLS |
+| 25 | Both `false` | No encryption (not recommended) |
+
+> **CRITICAL:** Do not set both `smtp_tls` and `smtp_enable_starttls_auto` to `true` — they are mutually exclusive.
+
+#### Emails going to spam
+
+- Configure **SPF** DNS record: `v=spf1 include:spf.protection.outlook.com ~all`
+- Configure **DKIM** if your mail server supports it
+- Configure **DMARC** DNS record: `v=DMARC1; p=quarantine; rua=mailto:dmarc@yourdomain.com`
+- Ensure `gitlab_email_from` domain matches the SMTP user domain
+
+---
+
+## 19. Essential Git Commands Reference
+
+A quick reference for developers working with this GitLab instance, covering the most common Git operations.
+
+### 19.1 Initial Git Configuration
+
+Run these once on each developer machine:
+
+```bash
+git config --global user.name "Your Full Name"
+git config --global user.email "your.email@yourdomain.com"
+git config --global init.defaultBranch main
+```
+
+### 19.2 Clone a Repository
+
+| Method | URL Format | Requires |
+|---|---|---|
+| **SSH** | `ssh://git@gitlab.yourdomain.com:2222/group/project.git` | SSH key configured |
+| **HTTPS** | `https://gitlab.yourdomain.com/group/project.git` | Password or personal access token |
+
+```bash
+# SSH clone (uses port 2222)
+git clone ssh://git@gitlab.yourdomain.com:2222/group/project.git
+
+# HTTPS clone
+git clone https://gitlab.yourdomain.com/group/project.git
+```
+
+> **Note:** For SSH, configure `~/.ssh/config` to use the short clone URL format. See [Section 11.5](#115-ssh-configuration-for-git-all-platforms).
+
+### 19.3 Everyday Commands
+
+| Command | Description |
+|---|---|
+| `git status` | Show changed/staged/untracked files |
+| `git add .` | Stage all changes |
+| `git add <file>` | Stage a specific file |
+| `git commit -m "message"` | Commit staged changes with a message |
+| `git push origin main` | Push commits to remote |
+| `git pull origin main` | Pull and merge latest changes |
+| `git fetch --all` | Fetch from all remotes without merging |
+
+### 19.4 Branching & Merging
+
+| Command | Description |
+|---|---|
+| `git branch` | List local branches |
+| `git branch -a` | List all branches (local + remote) |
+| `git checkout -b feature/my-feature` | Create and switch to a new branch |
+| `git switch feature/my-feature` | Switch to an existing branch (Git 2.23+) |
+| `git merge feature/my-feature` | Merge a branch into the current branch |
+| `git branch -d feature/my-feature` | Delete a local branch (merged only) |
+| `git push origin --delete feature/my-feature` | Delete a remote branch |
+
+### 19.5 Stash, Log & Diff
+
+| Command | Description |
+|---|---|
+| `git stash` | Temporarily save uncommitted changes |
+| `git stash pop` | Restore the most recent stash |
+| `git stash list` | List all stashes |
+| `git log --oneline -20` | Show last 20 commits (compact view) |
+| `git log --graph --oneline --all` | Visual branch graph |
+| `git diff` | Show unstaged changes |
+| `git diff --staged` | Show staged changes |
+| `git diff main..feature/branch` | Compare two branches |
+
+### 19.6 Undoing Changes
+
+| Command | Description |
+|---|---|
+| `git restore <file>` | Discard unstaged changes to a file |
+| `git restore --staged <file>` | Unstage a file (keep changes) |
+| `git reset --soft HEAD~1` | Undo last commit, keep changes staged |
+| `git reset --hard HEAD~1` | Undo last commit and discard all changes |
+| `git revert <commit-hash>` | Create a new commit that reverses a previous one |
+
+> **WARNING:** `git reset --hard` permanently discards changes and cannot be undone. Use `git revert` on shared branches to preserve history for other team members.
+
+### 19.7 Working with Merge Requests from CLI
+
+GitLab supports push options that let you create merge requests directly from `git push`:
+
+```bash
+# Push and create a merge request
+git push -o merge_request.create \
+         -o merge_request.target=main \
+         -o merge_request.title="Add new feature" \
+         origin feature/my-feature
+```
+
+**Available push options:**
+
+| Option | Description |
+|---|---|
+| `-o merge_request.create` | Create a new merge request |
+| `-o merge_request.target=main` | Set the target branch |
+| `-o merge_request.title="Title"` | Set the MR title |
+| `-o merge_request.description="Desc"` | Set the MR description |
+| `-o merge_request.remove_source_branch` | Auto-delete branch after merge |
+| `-o merge_request.assign="username"` | Assign the MR to a user |
+| `-o merge_request.merge_when_pipeline_succeeds` | Auto-merge when CI passes |
+
+### 19.8 .gitignore Best Practices
+
+Create a `.gitignore` file in your project root to exclude files that should not be committed:
+
+```
+# IDE files
+.idea/
+.vscode/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment and secrets
+.env
+.env.local
+*.pem
+*.key
+credentials.json
+
+# Build artifacts
+node_modules/
+dist/
+build/
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+```
+
+> **Tip:** Use [https://gitignore.io](https://gitignore.io) to generate `.gitignore` files tailored to your tech stack.
+
+---
+
+## 20. Monitoring with Site24x7
+
+Site24x7 is a cloud-based monitoring platform. This section covers what to monitor for a self-hosted GitLab instance and how to configure each monitor.
+
+### 20.1 GitLab Built-in Health Endpoints
+
+GitLab provides built-in endpoints for monitoring:
+
+| Endpoint | URL | Purpose | Expected Response |
+|---|---|---|---|
+| **Health** | `/-/health` | Basic health check | `GitLab OK` (text) |
+| **Readiness** | `/-/readiness` | All sub-services ready | JSON with component status |
+| **Liveness** | `/-/liveness` | Process is alive (not deadlocked) | JSON `{"status":"ok"}` |
+
+Test from the server:
+
+```bash
+# Basic health
+curl -k https://localhost/-/health
+
+# Readiness (checks PostgreSQL, Redis, Gitaly, Sidekiq)
+curl -k https://localhost/-/readiness
+
+# Liveness
+curl -k https://localhost/-/liveness
+```
+
+> **Note:** The readiness endpoint checks all sub-services (PostgreSQL, Redis, Gitaly, Sidekiq). If any sub-service is down, readiness returns a non-200 response — making it the best endpoint for comprehensive monitoring.
+
+### 20.2 Site24x7 — HTTPS URL Monitor
+
+Monitor GitLab's availability via HTTPS:
+
+1. Log into **Site24x7** dashboard
+2. Navigate to **Web** -> **Website Monitor** -> **Add Monitor**
+3. Configure:
+
+| Setting | Value |
+|---|---|
+| Display Name | `GitLab - HTTPS Health` |
+| URL | `https://gitlab.yourdomain.com/-/health` |
+| Check Frequency | Every 5 minutes |
+| HTTP Method | GET |
+| Expected Status Code | 200 |
+| Expected Content String | `GitLab OK` |
+
+4. Set alert thresholds:
+
+| Condition | Severity |
+|---|---|
+| Response time > 5 seconds | Warning |
+| Response time > 10 seconds | Critical |
+| HTTP status != 200 | Critical |
+| Content string not found | Critical |
+
+> **Self-signed certificate note:** If using a self-signed certificate, enable "Skip SSL validation" in the monitor settings, or upload your CA certificate to Site24x7 under **Admin** -> **Certificate Store**.
+
+### 20.3 Site24x7 — Port Monitoring
+
+Monitor critical service ports:
+
+| Port | Service | Protocol | Alert If |
+|---|---|---|---|
+| 443 | HTTPS (Web UI + API) | TCP | Connection refused or timeout |
+| 80 | HTTP (redirect to HTTPS) | TCP | Connection refused |
+| 2222 | Git over SSH | TCP | Connection refused or timeout |
+
+Configure in Site24x7: **Network** -> **Port Monitor** -> **Add Monitor** for each port.
+
+### 20.4 Site24x7 — SSL Certificate Expiry
+
+Monitor your SSL certificate expiration:
+
+1. Site24x7: **Web** -> **SSL/TLS Certificate Monitor** -> **Add Monitor**
+2. Configure:
+
+| Setting | Value |
+|---|---|
+| Host | `gitlab.yourdomain.com` |
+| Port | `443` |
+| Warning threshold | 30 days before expiry |
+| Critical threshold | 14 days before expiry |
+
+> See [Section 5A.4](#5a4-certificate-renewal) for self-signed certificate renewal steps.
+
+### 20.5 Site24x7 — Server Resource Monitoring
+
+Install the Site24x7 Linux agent on the GitLab host to monitor system resources:
+
+```bash
+# Download and install the Site24x7 Linux agent
+# Get the install command from: Site24x7 -> Agents -> Add Server Monitor -> Linux
+# It will look like:
+bash -c "$(curl -sL https://staticdownloads.site24x7.com/server/Site24x7InstallScript.sh)" \
+  readlink -i -key=YOUR-DEVICE-KEY
+```
+
+**Recommended alert thresholds:**
+
+| Metric | Warning | Critical | Why |
+|---|---|---|---|
+| Disk usage (`/var/gitlab`) | > 80% | > 90% | Repos, DB, and backups grow over time |
+| CPU utilization | > 80% for 5 min | > 95% for 5 min | GitLab is CPU-intensive during CI/CD |
+| Memory utilization | > 85% | > 95% | GitLab requires minimum 4 GB RAM |
+| Swap usage | > 50% | > 80% | Heavy swap causes severe performance issues |
+
+### 20.6 Docker Container Health Monitoring
+
+Add a healthcheck to your `docker-compose.yml`:
+
+```bash
+vi /var/gitlab/docker-compose.yml
+```
+
+Add the `healthcheck` block under the `gitlab` service:
+
+```yaml
+    healthcheck:
+      test: ["CMD", "curl", "-f", "-k", "https://localhost/-/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+```
+
+Apply the change:
+
+```bash
+cd /var/gitlab && docker compose up -d
+```
+
+Check container health status:
+
+```bash
+# Check health status
+docker inspect --format='{{.State.Health.Status}}' gitlab
+
+# Expected output: healthy
+
+# View detailed health check history
+docker inspect --format='{{json .State.Health}}' gitlab | python3 -m json.tool
+```
+
+### 20.7 Backup Job Monitoring
+
+Monitor that daily backups complete successfully by adding a Site24x7 heartbeat to the backup script.
+
+1. Create a **Heartbeat Monitor** in Site24x7: **Web** -> **Cron/Heartbeat Monitor** -> **Add Monitor**
+2. Set check interval to **24 hours**
+3. Copy the heartbeat URL provided by Site24x7
+
+Add to the end of `/var/gitlab/backup-gitlab.sh` (before the final log line):
+
+```bash
+# --- Heartbeat: Notify Site24x7 backup completed ---
+curl -s "https://api.site24x7.com/heartbeat/YOUR-HEARTBEAT-ID" > /dev/null 2>&1
+```
+
+If the heartbeat is not received within 24 hours, Site24x7 will alert that the backup job has failed.
+
+### 20.8 Prometheus Metrics (Built-in)
+
+GitLab CE bundles Prometheus for internal metrics collection. It runs inside the container on port 9090.
+
+Verify Prometheus is enabled:
+
+```bash
+docker exec -it gitlab grep prometheus /etc/gitlab/gitlab.rb
+```
+
+To enable (if disabled), add to `gitlab.rb`:
+
+```ruby
+##############################################
+# PROMETHEUS MONITORING
+##############################################
+prometheus_monitoring['enable'] = true
+```
+
+Then reconfigure:
+
+```bash
+docker exec -it gitlab gitlab-ctl reconfigure
+```
+
+**Useful Prometheus queries (accessible at `http://localhost:9090` inside the container):**
+
+| Query | What It Shows |
+|---|---|
+| `gitlab_sql_duration_seconds` | Database query performance |
+| `ruby_gc_duration_seconds` | Ruby garbage collection time |
+| `sidekiq_jobs_processed_total` | Total background jobs processed |
+| `gitlab_transaction_duration_seconds` | Web request latency |
+| `process_resident_memory_bytes` | Memory usage per process |
+
+> **Note:** Prometheus data can be scraped by an external Prometheus or Grafana instance for centralized dashboarding.
+
+### 20.9 Alerting Recommendations Summary
+
+| Alert | Monitor Type | Severity | Notification |
+|---|---|---|---|
+| HTTPS endpoint down | URL monitor | Critical | SMS + Email |
+| SSL certificate expiry < 14 days | SSL monitor | Critical | Email |
+| SSL certificate expiry < 30 days | SSL monitor | Warning | Email |
+| SSH port 2222 unreachable | Port monitor | Warning | Email |
+| Disk usage > 90% | Server monitor | Critical | SMS + Email |
+| CPU > 95% sustained (5 min) | Server monitor | Critical | Email |
+| Memory > 95% | Server monitor | Critical | Email |
+| Backup job not completed | Heartbeat monitor | Critical | SMS + Email |
+| Health endpoint not returning OK | URL monitor | Critical | SMS + Email |
+| Container unhealthy | Docker healthcheck | Critical | Email |
+
+---
+
+## 21. User & Group Management Best Practices
+
+GitLab uses a hierarchy of **Groups**, **Subgroups**, and **Projects**. Settings, permissions, and members defined at higher levels are automatically inherited by lower levels. This section provides a recommended structure based on departmental organization.
+
+### 21.1 Recommended Hierarchy
+
+```
+GitLab Instance
+│
+├── business-technology (Top-Level Group)
+│   ├── bms (Project)
+│   ├── itsm (Project)
+│   ├── erp (Project)
+│   └── ... (additional projects)
+│
+├── infrastructure (Top-Level Group)
+│   ├── cloud (Project)
+│   ├── dr (Project)
+│   ├── olam (Project)
+│   ├── satellite (Project)
+│   ├── access-hub (Project)
+│   └── ... (additional projects)
+│
+└── (additional departments as needed)
+```
+
+> **Note:** Each department gets a **top-level group**. Projects sit directly inside their department group. Use subgroups only if a department has teams with distinct access requirements (e.g., `infrastructure/cloud-team/` with its own members).
+
+### 21.2 Naming Conventions
+
+| Level | Convention | Example | Avoid |
+|---|---|---|---|
+| Top-level group | Lowercase, hyphenated | `business-technology` | `Business Technology`, `BT` |
+| Subgroup | Lowercase, hyphenated | `cloud-team` | `Cloud_Team`, `CloudTeam` |
+| Project | Lowercase, hyphenated | `access-hub` | `AccessHub`, `access hub` |
+
+> **Why?** GitLab generates URLs from names. Clean naming produces clean URLs:
+> `https://gitlab.infra.gov.sa/business-technology/bms`
+
+### 21.3 Permission Roles
+
+| Role | Can Do | Cannot Do |
+|---|---|---|
+| **Owner** | Full control: manage settings, members, delete group/project, manage billing | N/A — highest role |
+| **Maintainer** | Merge to protected branches, manage CI/CD, push tags, manage project members | Delete group, change group settings |
+| **Developer** | Push to non-protected branches, create merge requests, run CI/CD pipelines | Merge to protected branches, manage members |
+| **Reporter** | View code, create and comment on issues, generate reports | Push code, merge, manage CI/CD |
+| **Guest** | View issues and wiki (no code access in private repos) | Push, view code in private projects |
+
+### 21.4 Suggested Role Assignments
+
+| Person / Role | GitLab Role | Scope |
+|---|---|---|
+| IT Admin (you) | **Admin** (instance-wide) | Entire GitLab instance |
+| Department Head | **Owner** | Their department group (e.g., `business-technology`) |
+| Team Lead / Senior Engineer | **Maintainer** | Department group or specific projects |
+| Developer / Engineer | **Developer** | Department group or specific projects |
+| Project Manager / QA | **Reporter** | Department group |
+| External Auditor / Stakeholder | **Guest** | Specific projects only |
+
+> **Best Practice:** Assign roles at the **group level** — members automatically inherit access to all projects within the group. Only assign at the project level when someone needs access to a specific project outside their department.
+
+### 21.5 Creating the Structure via Web UI
+
+#### Create a Top-Level Group
+
+1. Log into GitLab as admin
+2. Click **Groups** (left sidebar) -> **New Group** -> **Create group**
+3. Configure:
+   - **Group name:** `Business Technology`
+   - **Group URL (slug):** `business-technology` (auto-generated)
+   - **Visibility level:** **Private**
+   - **Description:** `Business Technology department projects`
+4. Click **Create group**
+5. Repeat for **Infrastructure** group
+
+#### Create a Project Under a Group
+
+1. Navigate to the group (e.g., click **Business Technology**)
+2. Click **New project** -> **Create blank project**
+3. Configure:
+   - **Project name:** `BMS`
+   - **Project URL:** `business-technology/bms` (auto-generated)
+   - **Visibility level:** **Private**
+   - **Initialize repository with a README:** Yes (recommended)
+4. Click **Create project**
+5. Repeat for each project (ITSM, ERP, Cloud, DR, OLAM, Satellite, AccessHub, etc.)
+
+#### Add Members to a Group
+
+1. Navigate to the group (e.g., **Business Technology**)
+2. Click **Manage** -> **Members**
+3. Click **Invite members**
+4. Enter username or email address
+5. Select role: **Owner** / **Maintainer** / **Developer** / **Reporter** / **Guest**
+6. Optional: set an expiration date for temporary access
+7. Click **Invite**
+
+> **Note:** Members added at the group level inherit access to **all projects** within that group. This is the recommended approach — avoid adding members individually to each project.
+
+### 21.6 Creating the Structure via API (Automation)
+
+For bulk setup, use the GitLab API:
+
+```bash
+# Set your GitLab URL and admin personal access token
+GITLAB_URL="https://gitlab.yourdomain.com"
+TOKEN="your-admin-personal-access-token"
+```
+
+**Create top-level groups:**
+
+```bash
+# Create Business Technology group
+curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
+  --data "name=Business Technology&path=business-technology&visibility=private&description=Business Technology department projects" \
+  "${GITLAB_URL}/api/v4/groups"
+
+# Create Infrastructure group
+curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
+  --data "name=Infrastructure&path=infrastructure&visibility=private&description=Infrastructure department projects" \
+  "${GITLAB_URL}/api/v4/groups"
+```
+
+**Create projects under a group:**
+
+```bash
+# Get the group ID for Business Technology
+BT_GROUP_ID=$(curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
+  "${GITLAB_URL}/api/v4/groups?search=business-technology" | \
+  python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
+
+# Create projects under Business Technology
+for PROJECT in bms itsm erp; do
+  curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
+    --data "name=${PROJECT}&namespace_id=${BT_GROUP_ID}&visibility=private&initialize_with_readme=true" \
+    "${GITLAB_URL}/api/v4/projects"
+done
+
+# Get the group ID for Infrastructure
+INFRA_GROUP_ID=$(curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
+  "${GITLAB_URL}/api/v4/groups?search=infrastructure" | \
+  python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
+
+# Create projects under Infrastructure
+for PROJECT in cloud dr olam satellite access-hub; do
+  curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
+    --data "name=${PROJECT}&namespace_id=${INFRA_GROUP_ID}&visibility=private&initialize_with_readme=true" \
+    "${GITLAB_URL}/api/v4/projects"
+done
+```
+
+**Add members to a group:**
+
+```bash
+# Add a user as Maintainer to Business Technology group
+USER_ID=3  # Get user ID from Admin Area -> Users, or API
+curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
+  --data "user_id=${USER_ID}&access_level=40" \
+  "${GITLAB_URL}/api/v4/groups/${BT_GROUP_ID}/members"
+```
+
+**Access level numbers:**
+
+| Access Level | Number |
+|---|---|
+| Guest | 10 |
+| Reporter | 20 |
+| Developer | 30 |
+| Maintainer | 40 |
+| Owner | 50 |
+
+### 21.7 Transferring Existing Projects
+
+If projects were created at the instance root level and need to be moved into a group:
+
+1. Navigate to the project -> **Settings** -> **General** -> **Advanced**
+2. Scroll to **Transfer project**
+3. Select the target group (e.g., `business-technology`)
+4. Type the project name to confirm
+5. Click **Transfer project**
+
+> **WARNING:** Transferring a project **changes its URL permanently**. All existing Git remotes, bookmarks, CI/CD configurations, and links referencing the old URL will break. Update remotes on every developer machine:
+> ```bash
+> git remote set-url origin ssh://git@gitlab.yourdomain.com:2222/business-technology/bms.git
+> ```
+
+### 21.8 Best Practices Summary
+
+- **One top-level group per department** — keep the hierarchy flat and simple
+- **Group-level members** — add members at the group level for department-wide access; use project-level only for exceptions
+- **Private by default** — keep all groups and projects Private; use Internal only if cross-department collaboration is needed
+- **Maintainer, not Owner** — give team leads Maintainer role unless they need to manage group settings (delete, transfer, etc.)
+- **Review membership quarterly** — remove departed employees and audit role assignments
+- **Descriptive names** — use project names that match the real application/system name
+- **Document the structure** — add a description to each group explaining its purpose and ownership
+- **Protect the main branch** — in each project, go to **Settings** -> **Repository** -> **Protected branches** and ensure `main` requires merge request approval
+- **Require merge request approvals** — set minimum approvals in **Settings** -> **Merge requests** to enforce code review
 
 ---
 
