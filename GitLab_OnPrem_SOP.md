@@ -3,8 +3,8 @@
 **Platform:** Oracle Enterprise Linux 9 (OEL 9)
 **Deployment Method:** Docker Compose
 **Edition:** GitLab Community Edition (CE) — Free
-**Document Version:** 1.4
-**Date:** 2026-02-21
+**Document Version:** 1.5
+**Date:** 2026-02-22
 
 ---
 
@@ -31,6 +31,7 @@
 19. [Essential Git Commands Reference](#19-essential-git-commands-reference)
 20. [Monitoring with Site24x7](#20-monitoring-with-site24x7)
 21. [User & Group Management Best Practices](#21-user--group-management-best-practices)
+22. [GitHub → GitLab Pull Mirroring](#22-github--gitlab-pull-mirroring)
 
 ---
 
@@ -50,6 +51,7 @@ Deployment of a self-hosted GitLab CE instance running in Docker on OEL 9, with:
 - Essential Git commands reference for developers
 - Monitoring integration with Site24x7
 - User and group management with role-based access
+- GitHub → GitLab pull mirroring (cron-based sync for CE)
 
 ### GitLab Self-Managed vs GitLab SaaS (Free Tier)
 
@@ -2500,6 +2502,268 @@ If projects were created at the instance root level or under the wrong group and
 - **Document the structure** — add a description to each group and sub-group explaining its purpose and ownership
 - **Protect the main branch** — in each project, go to **Settings** -> **Repository** -> **Protected branches** and ensure `main` requires merge request approval
 - **Require merge request approvals** — set minimum approvals in **Settings** -> **Merge requests** to enforce code review
+
+---
+
+## 22. GitHub → GitLab Pull Mirroring
+
+GitLab CE (free) does **not** include pull mirroring — that feature requires GitLab Premium. This section provides a cron-based alternative that achieves the same result: any push to GitHub is automatically synced to your on-prem GitLab instance.
+
+### 22.1 Why Cron-based Mirroring?
+
+| Approach | Works Here? | Why |
+|---|---|---|
+| GitLab Pull Mirror (built-in) | **No** | Premium/Ultimate feature only |
+| GitHub Actions push to GitLab | **No** | GitLab server is not publicly exposed — GitHub runners can't reach it |
+| **Cron job on GitLab server** | **Yes** | Runs on the server, makes **outbound** connections to GitHub only |
+
+**How it works:**
+
+```
+GitHub (public)                          GitLab (internal)
+     │                                        ▲
+     │                                        │
+     └──── git fetch (outbound) ────→ nif-prod-gitlab-01 ──── git push (local) ────┘
+```
+
+The server reaches **out** to GitHub to fetch changes, then pushes them **locally** to GitLab. No inbound connectivity to your server is required.
+
+### 22.2 Prerequisites
+
+| Requirement | Details |
+|---|---|
+| Git on the host | Already installed on OEL 9 (`yum install git` if missing) |
+| SSH key pair | For read-only access to GitHub repos |
+| GitLab Personal Access Token (PAT) | With `write_repository` scope — for pushing to local GitLab via HTTPS |
+| Outbound internet access | Server must reach `github.com` on port 22 (SSH) or 443 (HTTPS) |
+
+### 22.3 Generate SSH Key for GitHub Access
+
+Run on `nif-prod-gitlab-01` as root:
+
+```bash
+# Generate a dedicated key pair for mirroring
+ssh-keygen -t ed25519 -C "gitlab-mirror" -f /root/.ssh/github_mirror_key -N ""
+
+# Display the public key — copy this for GitHub
+cat /root/.ssh/github_mirror_key.pub
+```
+
+**Add the key to GitHub:**
+
+1. Go to the GitHub repository -> **Settings** -> **Deploy keys**
+2. Click **Add deploy key**
+3. **Title:** `GitLab Mirror - nif-prod-gitlab-01`
+4. **Key:** Paste the public key from above
+5. **Allow write access:** Leave **unchecked** (read-only is sufficient)
+6. Click **Add key**
+
+> **Note:** Deploy keys are per-repo. For organization-wide access, consider adding the key to a GitHub **machine user** account instead.
+
+**Configure SSH to use the mirror key for GitHub:**
+
+```bash
+cat >> /root/.ssh/config << 'EOF'
+Host github.com
+  HostName github.com
+  IdentityFile /root/.ssh/github_mirror_key
+  IdentitiesOnly yes
+  StrictHostKeyChecking accept-new
+EOF
+
+chmod 600 /root/.ssh/config
+```
+
+**Test the connection:**
+
+```bash
+ssh -T git@github.com
+# Expected: "Hi <username>! You've successfully authenticated..."
+```
+
+### 22.4 Create a GitLab Personal Access Token
+
+You need a PAT to push to your local GitLab instance via HTTPS:
+
+1. Log into GitLab as admin -> click your avatar -> **Edit profile**
+2. Navigate to **Access Tokens** (left sidebar)
+3. Click **Add new token**
+4. Configure:
+   - **Token name:** `mirror-bot`
+   - **Expiration date:** Set a reasonable expiry (e.g., 1 year)
+   - **Scopes:** Check `write_repository`
+5. Click **Create personal access token**
+6. **Copy the token** — you won't see it again
+
+**Store the token securely on the server:**
+
+```bash
+mkdir -p /opt/gitlab-mirror
+echo "YOUR_TOKEN_HERE" > /opt/gitlab-mirror/.gitlab_token
+chmod 600 /opt/gitlab-mirror/.gitlab_token
+```
+
+### 22.5 Configure Repos to Mirror
+
+Create a configuration file listing each GitHub → GitLab mapping:
+
+```bash
+cat > /opt/gitlab-mirror/repos.conf << 'EOF'
+# Format: GITHUB_SSH_URL  GITLAB_PROJECT_PATH
+# One repo per line. Lines starting with # are ignored.
+#
+# Example:
+# git@github.com:MyOrg/bms.git  business-technology/bms/bms
+# git@github.com:MyOrg/cloud-infra.git  infrastructure/cloud/cloud
+
+git@github.com:AbdullahAlShamrani-DevOps/bms.git  business-technology/bms/bms
+EOF
+```
+
+> **GitLab project path** must match the group/subgroup/project structure. For example, `business-technology/bms/bms` means: top-level group `business-technology`, sub-group `bms`, project `bms`.
+
+### 22.6 Create the Mirror Script
+
+```bash
+cat > /opt/gitlab-mirror/mirror.sh << 'SCRIPT'
+#!/bin/bash
+#
+# GitHub → GitLab Pull Mirror Script
+# Fetches from GitHub and pushes to local GitLab CE
+#
+
+set -euo pipefail
+
+MIRROR_DIR="/opt/gitlab-mirror/repos"
+CONF_FILE="/opt/gitlab-mirror/repos.conf"
+TOKEN_FILE="/opt/gitlab-mirror/.gitlab_token"
+GITLAB_HOST="gitlab.infra.gov.sa"
+LOG_PREFIX="[gitlab-mirror]"
+
+# Read GitLab PAT
+if [[ ! -f "$TOKEN_FILE" ]]; then
+  echo "$LOG_PREFIX ERROR: Token file not found: $TOKEN_FILE"
+  exit 1
+fi
+GITLAB_TOKEN=$(cat "$TOKEN_FILE")
+
+# Create repos directory
+mkdir -p "$MIRROR_DIR"
+
+# Read config file, skip comments and blank lines
+grep -v '^\s*#' "$CONF_FILE" | grep -v '^\s*$' | while read -r GITHUB_URL GITLAB_PATH; do
+
+  REPO_NAME=$(basename "$GITHUB_URL" .git)
+  BARE_DIR="${MIRROR_DIR}/${REPO_NAME}.git"
+  GITLAB_PUSH_URL="https://mirror-bot:${GITLAB_TOKEN}@${GITLAB_HOST}/${GITLAB_PATH}.git"
+
+  echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') Syncing: ${REPO_NAME}"
+
+  # First run: clone bare repo from GitHub
+  if [[ ! -d "$BARE_DIR" ]]; then
+    echo "$LOG_PREFIX  First run — cloning bare from GitHub..."
+    git clone --bare "$GITHUB_URL" "$BARE_DIR"
+    cd "$BARE_DIR"
+    git remote add gitlab "$GITLAB_PUSH_URL"
+  else
+    cd "$BARE_DIR"
+    # Update GitLab remote URL (in case token changed)
+    git remote set-url gitlab "$GITLAB_PUSH_URL" 2>/dev/null || git remote add gitlab "$GITLAB_PUSH_URL"
+  fi
+
+  # Fetch latest from GitHub
+  echo "$LOG_PREFIX  Fetching from GitHub..."
+  git fetch --prune origin
+
+  # Push everything to GitLab (all branches + tags)
+  echo "$LOG_PREFIX  Pushing to GitLab..."
+  git push --mirror gitlab
+
+  echo "$LOG_PREFIX  Done: ${REPO_NAME}"
+  echo ""
+
+done
+
+echo "$LOG_PREFIX $(date '+%Y-%m-%d %H:%M:%S') All repos synced."
+SCRIPT
+
+chmod +x /opt/gitlab-mirror/mirror.sh
+```
+
+### 22.7 Initial Run & Verification
+
+```bash
+# Run the script manually first to verify it works
+/opt/gitlab-mirror/mirror.sh
+
+# Check for errors
+echo $?  # Should be 0
+```
+
+**Verify in GitLab:**
+
+1. Navigate to the mirrored project in GitLab web UI
+2. Confirm branches and commits match the GitHub source
+3. Check that tags are present
+
+### 22.8 Set Up Cron Schedule
+
+```bash
+# Add cron job — runs every 5 minutes
+(crontab -l 2>/dev/null; echo "*/5 * * * * /opt/gitlab-mirror/mirror.sh >> /var/log/gitlab-mirror.log 2>&1") | crontab -
+
+# Verify cron entry
+crontab -l
+```
+
+**Adjust the interval as needed:**
+
+| Interval | Cron Expression | Use Case |
+|---|---|---|
+| Every 5 minutes | `*/5 * * * *` | Active development — near-real-time sync |
+| Every 15 minutes | `*/15 * * * *` | Moderate activity — balanced load |
+| Every hour | `0 * * * *` | Low-frequency repos — minimal resource use |
+| Every 6 hours | `0 */6 * * *` | Archive/reference repos — daily-ish sync |
+
+### 22.9 Adding a New Repo to Mirror
+
+1. **GitHub:** Add the server's SSH public key (`/root/.ssh/github_mirror_key.pub`) as a Deploy Key on the new GitHub repo
+2. **GitLab:** Create the target project under the correct sub-group (see [Section 21.5](#215-creating-the-structure-via-web-ui))
+3. **Server:** Add a new line to `/opt/gitlab-mirror/repos.conf`:
+   ```
+   git@github.com:YourOrg/new-repo.git  group/subgroup/project
+   ```
+4. **Test:** Run `/opt/gitlab-mirror/mirror.sh` manually to verify
+
+### 22.10 Log Rotation
+
+Prevent the log file from growing indefinitely:
+
+```bash
+cat > /etc/logrotate.d/gitlab-mirror << 'EOF'
+/var/log/gitlab-mirror.log {
+    weekly
+    rotate 4
+    compress
+    missingok
+    notifempty
+}
+EOF
+```
+
+### 22.11 Troubleshooting
+
+| Problem | Cause | Fix |
+|---|---|---|
+| `Permission denied (publickey)` | SSH key not added to GitHub | Add `/root/.ssh/github_mirror_key.pub` as Deploy Key on the GitHub repo |
+| `Could not resolve host: github.com` | No outbound DNS/internet | Check DNS config, firewall rules for outbound port 22/443 |
+| `remote: HTTP Basic: Access denied` | GitLab PAT expired or wrong scope | Generate a new PAT with `write_repository` scope |
+| `remote: The project you were looking for could not be found` | Wrong GitLab project path in `repos.conf` | Verify the path matches `group/subgroup/project` exactly |
+| Cron not running | `crond` service stopped | `systemctl enable --now crond` |
+| Push rejected — protected branch | GitLab branch protection blocking mirror push | Go to project **Settings** -> **Repository** -> **Protected branches** -> allow the mirror-bot user to push, or use an admin token |
+| Stale branches not removed | `--prune` only affects fetch, not push | `git push --mirror` handles this — it removes branches on GitLab that no longer exist on GitHub |
+
+> **Security Note:** The GitLab PAT is stored in plaintext at `/opt/gitlab-mirror/.gitlab_token`. Ensure the file has `600` permissions and is owned by root. Consider rotating the token periodically.
 
 ---
 
