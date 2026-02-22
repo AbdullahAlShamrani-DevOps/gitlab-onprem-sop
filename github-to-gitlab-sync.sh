@@ -121,9 +121,14 @@ for ENTRY in "${REPOS[@]}"; do
       RESULTS+=("[FAIL] ${REPO_NAME} — clone failed")
       continue
     fi
+    # Ensure fetch refspec is set (bare clones sometimes miss this)
+    cd "$BARE_DIR"
+    git config remote.origin.fetch "+refs/heads/*:refs/heads/*"
   else
     echo "  [1/4] Fetching latest from GitHub..."
     cd "$BARE_DIR"
+    # Ensure fetch refspec is set (fix for older bare clones)
+    git config remote.origin.fetch "+refs/heads/*:refs/heads/*"
     if ! git fetch --prune origin 2>&1; then
       echo "  [FAIL] Fetch failed. Check SSH key and network."
       FAIL_COUNT=$((FAIL_COUNT + 1))
