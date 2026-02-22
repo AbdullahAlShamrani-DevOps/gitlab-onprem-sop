@@ -733,6 +733,16 @@ gitlab_rails['gitlab_shell_ssh_port'] = 2222
 gitlab_rails['time_zone'] = 'Asia/Riyadh'
 
 ##############################################
+# MONITORING — Health Endpoint Access
+# By default, /-/health, /-/readiness, /-/liveness
+# are restricted to localhost only.
+# Uncomment and add IPs/CIDRs that need access
+# (e.g., Site24x7 probes, load balancers).
+# Use '0.0.0.0/0' to allow all (less secure).
+##############################################
+gitlab_rails['monitoring_whitelist'] = ['127.0.0.0/8', '::1/128', '0.0.0.0/0']
+
+##############################################
 # BACKUP CONFIGURATION
 ##############################################
 gitlab_rails['backup_path']       = "/var/opt/gitlab/backups"
@@ -2015,6 +2025,8 @@ curl -k https://localhost/-/liveness
 ```
 
 > **Note:** The readiness endpoint checks all sub-services (PostgreSQL, Redis, Gitaly, Sidekiq). If any sub-service is down, readiness returns a non-200 response — making it the best endpoint for comprehensive monitoring.
+
+> **Important:** By default, health endpoints are restricted to **localhost only**. To allow external monitoring (e.g., Site24x7, load balancers), you **must** configure `monitoring_whitelist` in `gitlab.rb` — see [Section 7.2](#72-edit-gitlabrb). Without this, external requests to `/-/health` will return "not found".
 
 ### 20.2 Site24x7 — HTTPS URL Monitor
 
