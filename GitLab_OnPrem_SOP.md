@@ -2532,7 +2532,7 @@ The server reaches **out** to GitHub to fetch changes, then pushes them **locall
 
 | Requirement | Details |
 |---|---|
-| Git on the host | Already installed on OEL 9 (`yum install git` if missing) |
+| Git on the host | **Not included in OEL 9 minimal** — install with `dnf install -y git` |
 | SSH key pair | For read-only access to GitHub repos |
 | GitLab Personal Access Token (PAT) | With `write_repository` scope — for pushing to local GitLab via HTTPS |
 | Outbound internet access | Server must reach `github.com` on port 22 (SSH) or 443 (HTTPS) |
