@@ -165,11 +165,18 @@ for ENTRY in "${REPOS[@]}"; do
   echo "  [4/4] Pushing to GitLab..."
   cd "$BARE_DIR"
 
-  # Set up GitLab remote
+  # Set up GitLab remote (fetch=never so it doesn't create tracking refs)
   GITLAB_PUSH_URL="https://sync-bot:${GITLAB_TOKEN}@${GITLAB_HOST}/${GITLAB_PATH}.git"
   git remote set-url gitlab "$GITLAB_PUSH_URL" 2>/dev/null || git remote add gitlab "$GITLAB_PUSH_URL"
 
-  if git push --mirror gitlab 2>&1; then
+  # Clean up any stale gitlab remote tracking refs (these cause "hidden ref" errors)
+  git for-each-ref --format='%(refname)' refs/remotes/gitlab/ 2>/dev/null | while read ref; do
+    git update-ref -d "$ref" 2>/dev/null || true
+  done
+
+  # Push all branches + tags (NOT --mirror, which tries to push
+  # remote tracking refs like refs/remotes/gitlab/* that GitLab rejects)
+  if git push --all --force gitlab 2>&1 && git push --tags --force gitlab 2>&1; then
     echo ""
     echo "  [OK] ${REPO_NAME} synced successfully."
     SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
