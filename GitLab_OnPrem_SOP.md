@@ -2217,29 +2217,44 @@ docker exec -it gitlab gitlab-ctl reconfigure
 
 GitLab uses a hierarchy of **Groups**, **Subgroups**, and **Projects**. Settings, permissions, and members defined at higher levels are automatically inherited by lower levels. This section provides a recommended structure based on departmental organization.
 
+> **Key Concept — Project vs Repository:**
+> In GitLab, **1 Project = 1 Git Repository**. A project is the container that holds a single Git repo plus its issue tracker, CI/CD pipelines, merge requests, wiki, and container registry. Because each project can only hold one repository, we use **sub-groups** to organize multiple projects that belong to the same team. Even if a team has only one project today (e.g., `bms`), the sub-group allows adding more projects in the future (e.g., `bms-frontend`, `bms-backend`, `bms-docs`) without restructuring permissions or hierarchy.
+
 ### 21.1 Recommended Hierarchy
 
 ```
 GitLab Instance
 │
-├── business-technology (Top-Level Group)
-│   ├── bms (Project)
-│   ├── itsm (Project)
-│   ├── erp (Project)
-│   └── ... (additional projects)
+├── business-technology/          (Top-Level Group — Department)
+│   ├── bms/                      (Sub-group — BMS Team only)
+│   │   └── bms                   (Project = 1 Git repo)
+│   ├── itsm/                     (Sub-group — ITSM Team only)
+│   │   └── itsm                  (Project = 1 Git repo)
+│   ├── erp/                      (Sub-group — ERP Team only)
+│   │   └── erp                   (Project = 1 Git repo)
+│   └── .../                      (additional sub-groups per team)
 │
-├── infrastructure (Top-Level Group)
-│   ├── cloud (Project)
-│   ├── dr (Project)
-│   ├── olam (Project)
-│   ├── satellite (Project)
-│   ├── access-hub (Project)
-│   └── ... (additional projects)
+├── infrastructure/               (Top-Level Group — Department)
+│   ├── cloud/                    (Sub-group — Cloud Team)
+│   │   └── cloud                 (Project)
+│   ├── dr/                       (Sub-group — DR Team)
+│   │   └── dr                    (Project)
+│   ├── olam/                     (Sub-group)
+│   │   └── olam                  (Project)
+│   ├── satellite/                (Sub-group)
+│   │   └── satellite             (Project)
+│   ├── access-hub/               (Sub-group)
+│   │   └── access-hub            (Project)
+│   └── .../                      (additional sub-groups per team)
 │
 └── (additional departments as needed)
 ```
 
-> **Note:** Each department gets a **top-level group**. Projects sit directly inside their department group. Use subgroups only if a department has teams with distinct access requirements (e.g., `infrastructure/cloud-team/` with its own members).
+> **Why sub-groups?** Members added at a group level inherit access to **all** projects inside that group. If BMS and ITSM projects sit directly under `business-technology`, any member added to the group sees both projects — breaking team isolation. Sub-groups solve this:
+> - **Department Head** added at `business-technology` (top-level group) → sees **all** teams' projects
+> - **BMS developer** added at `business-technology/bms` (sub-group) → sees **only** BMS projects
+>
+> Even if each team has just one project today, the sub-group structure provides **future scalability** — new repos can be added under the same sub-group without restructuring.
 
 ### 21.2 Naming Conventions
 
@@ -2250,7 +2265,7 @@ GitLab Instance
 | Project | Lowercase, hyphenated | `access-hub` | `AccessHub`, `access hub` |
 
 > **Why?** GitLab generates URLs from names. Clean naming produces clean URLs:
-> `https://gitlab.infra.gov.sa/business-technology/bms`
+> `https://gitlab.infra.gov.sa/business-technology/bms/bms` (group / sub-group / project)
 
 ### 21.3 Permission Roles
 
@@ -2264,20 +2279,20 @@ GitLab Instance
 
 ### 21.4 Suggested Role Assignments
 
-| Person / Role | GitLab Role | Scope |
-|---|---|---|
-| IT Admin (you) | **Admin** (instance-wide) | Entire GitLab instance |
-| Department Head | **Owner** | Their department group (e.g., `business-technology`) |
-| Team Lead / Senior Engineer | **Maintainer** | Department group or specific projects |
-| Developer / Engineer | **Developer** | Department group or specific projects |
-| Project Manager / QA | **Reporter** | Department group |
-| External Auditor / Stakeholder | **Guest** | Specific projects only |
+| Person / Role | GitLab Role | Assigned At | Sees |
+|---|---|---|---|
+| IT Admin (you) | **Admin** (instance-wide) | Instance | Everything |
+| Department Head | **Owner** | Top-level group (e.g., `business-technology`) | All teams in the department |
+| Team Lead / Senior Engineer | **Maintainer** | Sub-group (e.g., `business-technology/bms`) | Only their team's projects |
+| Developer / Engineer | **Developer** | Sub-group (e.g., `business-technology/bms`) | Only their team's projects |
+| Project Manager / QA | **Reporter** | Sub-group | Only their team's projects |
+| External Auditor / Stakeholder | **Guest** | Specific project only | Only that one project |
 
-> **Best Practice:** Assign roles at the **group level** — members automatically inherit access to all projects within the group. Only assign at the project level when someone needs access to a specific project outside their department.
+> **Best Practice:** Assign roles at the **sub-group level** for team isolation — members only see their own team's projects. Only assign at the top-level group when someone needs department-wide visibility (e.g., Department Head). Avoid project-level assignments except for cross-team exceptions.
 
 ### 21.5 Creating the Structure via Web UI
 
-#### Create a Top-Level Group
+#### Step 1 — Create Top-Level Groups (Departments)
 
 1. Log into GitLab as admin
 2. Click **Groups** (left sidebar) -> **New Group** -> **Create group**
@@ -2289,29 +2304,52 @@ GitLab Instance
 4. Click **Create group**
 5. Repeat for **Infrastructure** group
 
-#### Create a Project Under a Group
+#### Step 2 — Create Sub-groups (Teams)
 
-1. Navigate to the group (e.g., click **Business Technology**)
+1. Navigate to the top-level group (e.g., click **Business Technology**)
+2. Click **New subgroup**
+3. Configure:
+   - **Subgroup name:** `BMS`
+   - **Subgroup URL (slug):** `bms` (auto-generated)
+   - **Visibility level:** **Private**
+   - **Description:** `BMS team projects`
+4. Click **Create subgroup**
+5. Repeat for each team: **ITSM**, **ERP** (under Business Technology), **Cloud**, **DR**, **OLAM**, **Satellite**, **Access Hub** (under Infrastructure)
+
+#### Step 3 — Create Projects Under Sub-groups
+
+1. Navigate to the sub-group (e.g., **Business Technology** -> **BMS**)
 2. Click **New project** -> **Create blank project**
 3. Configure:
    - **Project name:** `BMS`
-   - **Project URL:** `business-technology/bms` (auto-generated)
+   - **Project URL:** `business-technology/bms/bms` (auto-generated)
    - **Visibility level:** **Private**
    - **Initialize repository with a README:** Yes (recommended)
 4. Click **Create project**
-5. Repeat for each project (ITSM, ERP, Cloud, DR, OLAM, Satellite, AccessHub, etc.)
+5. Repeat for each team's project(s)
 
-#### Add Members to a Group
+#### Step 4 — Add Department Head to Top-Level Group
 
-1. Navigate to the group (e.g., **Business Technology**)
+1. Navigate to the top-level group (e.g., **Business Technology**)
 2. Click **Manage** -> **Members**
 3. Click **Invite members**
-4. Enter username or email address
-5. Select role: **Owner** / **Maintainer** / **Developer** / **Reporter** / **Guest**
+4. Enter the Department Head's username or email
+5. Select role: **Owner**
+6. Click **Invite**
+
+> **Result:** The Department Head inherits access to **all sub-groups and projects** in the department.
+
+#### Step 5 — Add Team Members to Sub-groups
+
+1. Navigate to the sub-group (e.g., **Business Technology** -> **BMS**)
+2. Click **Manage** -> **Members**
+3. Click **Invite members**
+4. Enter team member's username or email
+5. Select role: **Maintainer** (team lead) / **Developer** (engineer) / **Reporter** (PM/QA)
 6. Optional: set an expiration date for temporary access
 7. Click **Invite**
 
-> **Note:** Members added at the group level inherit access to **all projects** within that group. This is the recommended approach — avoid adding members individually to each project.
+> **Result:** Team members only see projects within their sub-group. BMS developers cannot see ITSM projects and vice versa.
 
 ### 21.6 Creating the Structure via API (Automation)
 
@@ -2323,7 +2361,7 @@ GITLAB_URL="https://gitlab.yourdomain.com"
 TOKEN="your-admin-personal-access-token"
 ```
 
-**Create top-level groups:**
+**Step 1 — Create top-level groups (departments):**
 
 ```bash
 # Create Business Technology group
@@ -2337,7 +2375,7 @@ curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
   "${GITLAB_URL}/api/v4/groups"
 ```
 
-**Create projects under a group:**
+**Step 2 — Create sub-groups (teams) under each department:**
 
 ```bash
 # Get the group ID for Business Technology
@@ -2345,11 +2383,11 @@ BT_GROUP_ID=$(curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
   "${GITLAB_URL}/api/v4/groups?search=business-technology" | \
   python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
 
-# Create projects under Business Technology
-for PROJECT in bms itsm erp; do
+# Create sub-groups under Business Technology
+for TEAM in bms itsm erp; do
   curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
-    --data "name=${PROJECT}&namespace_id=${BT_GROUP_ID}&visibility=private&initialize_with_readme=true" \
-    "${GITLAB_URL}/api/v4/projects"
+    --data "name=${TEAM}&path=${TEAM}&visibility=private&parent_id=${BT_GROUP_ID}&description=${TEAM} team projects" \
+    "${GITLAB_URL}/api/v4/groups"
 done
 
 # Get the group ID for Infrastructure
@@ -2357,58 +2395,109 @@ INFRA_GROUP_ID=$(curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
   "${GITLAB_URL}/api/v4/groups?search=infrastructure" | \
   python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])")
 
-# Create projects under Infrastructure
-for PROJECT in cloud dr olam satellite access-hub; do
+# Create sub-groups under Infrastructure
+for TEAM in cloud dr olam satellite access-hub; do
   curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
-    --data "name=${PROJECT}&namespace_id=${INFRA_GROUP_ID}&visibility=private&initialize_with_readme=true" \
+    --data "name=${TEAM}&path=${TEAM}&visibility=private&parent_id=${INFRA_GROUP_ID}&description=${TEAM} team projects" \
+    "${GITLAB_URL}/api/v4/groups"
+done
+```
+
+**Step 3 — Create projects under sub-groups:**
+
+```bash
+# Get sub-group IDs and create projects
+# Example: Create 'bms' project under the 'bms' sub-group
+BMS_SUBGROUP_ID=$(curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
+  "${GITLAB_URL}/api/v4/groups?search=bms" | \
+  python3 -c "import sys,json; groups=[g for g in json.load(sys.stdin) if g['full_path']=='business-technology/bms']; print(groups[0]['id'])")
+
+curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
+  --data "name=bms&namespace_id=${BMS_SUBGROUP_ID}&visibility=private&initialize_with_readme=true" \
+  "${GITLAB_URL}/api/v4/projects"
+
+# Repeat pattern for each team — or use a loop:
+for TEAM in itsm erp; do
+  SUBGROUP_ID=$(curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
+    "${GITLAB_URL}/api/v4/groups?search=${TEAM}" | \
+    python3 -c "import sys,json; groups=[g for g in json.load(sys.stdin) if 'business-technology/${TEAM}'==g.get('full_path','')]; print(groups[0]['id'])")
+  curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
+    --data "name=${TEAM}&namespace_id=${SUBGROUP_ID}&visibility=private&initialize_with_readme=true" \
+    "${GITLAB_URL}/api/v4/projects"
+done
+
+for TEAM in cloud dr olam satellite access-hub; do
+  SUBGROUP_ID=$(curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
+    "${GITLAB_URL}/api/v4/groups?search=${TEAM}" | \
+    python3 -c "import sys,json; groups=[g for g in json.load(sys.stdin) if 'infrastructure/${TEAM}'==g.get('full_path','')]; print(groups[0]['id'])")
+  curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
+    --data "name=${TEAM}&namespace_id=${SUBGROUP_ID}&visibility=private&initialize_with_readme=true" \
     "${GITLAB_URL}/api/v4/projects"
 done
 ```
 
-**Add members to a group:**
+**Step 4 — Add Department Head to top-level group (sees all teams):**
 
 ```bash
-# Add a user as Maintainer to Business Technology group
+# Add Department Head as Owner to Business Technology group
 USER_ID=3  # Get user ID from Admin Area -> Users, or API
 curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
-  --data "user_id=${USER_ID}&access_level=40" \
+  --data "user_id=${USER_ID}&access_level=50" \
   "${GITLAB_URL}/api/v4/groups/${BT_GROUP_ID}/members"
+```
+
+**Step 5 — Add team members to sub-groups (team isolation):**
+
+```bash
+# Add a developer to the BMS sub-group only
+DEV_USER_ID=5
+curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
+  --data "user_id=${DEV_USER_ID}&access_level=30" \
+  "${GITLAB_URL}/api/v4/groups/${BMS_SUBGROUP_ID}/members"
+
+# Add a team lead as Maintainer to the BMS sub-group
+LEAD_USER_ID=4
+curl -sk --header "PRIVATE-TOKEN: $TOKEN" \
+  --data "user_id=${LEAD_USER_ID}&access_level=40" \
+  "${GITLAB_URL}/api/v4/groups/${BMS_SUBGROUP_ID}/members"
 ```
 
 **Access level numbers:**
 
-| Access Level | Number |
-|---|---|
-| Guest | 10 |
-| Reporter | 20 |
-| Developer | 30 |
-| Maintainer | 40 |
-| Owner | 50 |
+| Access Level | Number | Typical Use |
+|---|---|---|
+| Guest | 10 | External auditors / stakeholders |
+| Reporter | 20 | Project managers / QA |
+| Developer | 30 | Engineers (push to non-protected branches) |
+| Maintainer | 40 | Team leads (merge to protected branches) |
+| Owner | 50 | Department heads (full group control) |
 
 ### 21.7 Transferring Existing Projects
 
-If projects were created at the instance root level and need to be moved into a group:
+If projects were created at the instance root level or under the wrong group and need to be moved into a sub-group:
 
 1. Navigate to the project -> **Settings** -> **General** -> **Advanced**
 2. Scroll to **Transfer project**
-3. Select the target group (e.g., `business-technology`)
+3. Select the target sub-group (e.g., `business-technology / bms`)
 4. Type the project name to confirm
 5. Click **Transfer project**
 
 > **WARNING:** Transferring a project **changes its URL permanently**. All existing Git remotes, bookmarks, CI/CD configurations, and links referencing the old URL will break. Update remotes on every developer machine:
 > ```bash
-> git remote set-url origin ssh://git@gitlab.yourdomain.com:2222/business-technology/bms.git
+> git remote set-url origin ssh://git@gitlab.yourdomain.com:2222/business-technology/bms/bms.git
 > ```
 
 ### 21.8 Best Practices Summary
 
-- **One top-level group per department** — keep the hierarchy flat and simple
-- **Group-level members** — add members at the group level for department-wide access; use project-level only for exceptions
-- **Private by default** — keep all groups and projects Private; use Internal only if cross-department collaboration is needed
-- **Maintainer, not Owner** — give team leads Maintainer role unless they need to manage group settings (delete, transfer, etc.)
+- **One top-level group per department, one sub-group per team** — provides clean hierarchy with team isolation
+- **Sub-group-level members for isolation** — add team members at the sub-group level so they only see their team's projects; add Department Heads at the top-level group for department-wide visibility
+- **Never add regular users to the top-level group** — this gives them access to every team's projects, breaking isolation
+- **Private by default** — keep all groups, sub-groups, and projects Private; use Internal only if cross-department collaboration is needed
+- **Maintainer, not Owner** — give team leads Maintainer at the sub-group level; reserve Owner for Department Heads at the top-level group
+- **1 Project = 1 Repo** — remember each project holds a single Git repository; use sub-groups to organize multiple repos for the same team
 - **Review membership quarterly** — remove departed employees and audit role assignments
-- **Descriptive names** — use project names that match the real application/system name
-- **Document the structure** — add a description to each group explaining its purpose and ownership
+- **Descriptive names** — use project names that match the real application/system name, lowercase-hyphenated
+- **Document the structure** — add a description to each group and sub-group explaining its purpose and ownership
 - **Protect the main branch** — in each project, go to **Settings** -> **Repository** -> **Protected branches** and ensure `main` requires merge request approval
 - **Require merge request approvals** — set minimum approvals in **Settings** -> **Merge requests** to enforce code review
 
