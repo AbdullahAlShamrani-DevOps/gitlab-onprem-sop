@@ -955,6 +955,23 @@ gitlab_rails['omniauth_providers'] = [
 | `YOUR-CLIENT-SECRET` | Client secret value from Step 2 |
 | `gitlab.yourdomain.com` | Your actual GitLab FQDN |
 
+**How the SSO settings affect user creation:**
+
+| Setting | Value | What It Does |
+|---|---|---|
+| `omniauth_allow_single_sign_on` | `['openid_connect']` | New users get a GitLab account **automatically** on first SSO login |
+| `omniauth_auto_link_user` | `['openid_connect']` | If a GitLab account already exists with the same email, SSO **auto-links** to it |
+| `omniauth_block_auto_created_users` | `false` | Auto-created users can log in **immediately** — no admin approval needed |
+
+**What happens when you assign a user to the GitLab app in Azure Entra ID:**
+
+1. Assigning a user in Azure **does NOT** create a GitLab account — it only grants them permission to authenticate
+2. The GitLab account is created on **first SSO login** (user clicks "Microsoft Entra ID" button)
+3. The new user starts with **no group or project access** — an admin must add them to a sub-group (see [Section 21](#21-user--group-management-best-practices))
+4. If you **pre-create** a user in GitLab (**Admin Area** → **Users** → **New User**) with the same email, SSO will auto-link on first login
+
+> **CE Limitation:** SCIM provisioning (automatic user sync from Entra ID → GitLab) is **Premium only**. In CE, users are either created manually by an admin or auto-created on first SSO login.
+
 ### 10.7 Step 6: Apply Configuration
 
 ```bash
