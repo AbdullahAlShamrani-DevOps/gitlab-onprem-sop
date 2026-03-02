@@ -87,13 +87,6 @@ Migrate to a **self-hosted GitLab Premium** instance deployed on-premises. GitLa
 | Developer / Maintainer Users | 25 |
 | **Total Licensed Seats** | **35** |
 
-## 2.4 Repository Count
-
-| Type | Estimated Count |
-|:-----|----------------:|
-| Active Repositories | [Number] |
-| Archived Repositories | [Number] |
-
 \newpage
 
 # 3. Scope of Work
